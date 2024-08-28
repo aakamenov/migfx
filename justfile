@@ -1,8 +1,8 @@
 build:
-	odin build ./src -out:graphics -o:speed -vet-unused -show-timings -define:WGPU_GFLW_GLUE_SUPPORT_WAYLAND=true
+	odin build ./src -out:graphics -o:speed -vet-unused -show-timings
 run:
-	odin run ./src -out:graphics -o:speed -show-timings -define:WGPU_GFLW_GLUE_SUPPORT_WAYLAND=true
+	odin run ./src -out:graphics -o:speed -show-timings
 check:
-	odin check ./src
+	odin check ./src -no-entry-point
 test:
-	odin test ./src -out:graphics -show-timings
+    odin test ./migpu/pool -out:tests -show-timings
