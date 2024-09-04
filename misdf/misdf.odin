@@ -120,3 +120,7 @@ orthonormalize :: #force_inline proc "contextless" (
 orthogonal :: #force_inline proc "contextless" (v: $T/[2]f64, polarity: bool = true) -> T {
     return { -v.y, v.x } if polarity else { v.y, -v.x }
 }
+
+median :: #force_inline proc "contextless" (x: $T/[3]f64) -> f64 {
+    return max(min(x[0], x[1]), min(max(x[0], x[1]), x[2]))
+}

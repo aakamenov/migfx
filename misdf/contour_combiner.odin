@@ -3,6 +3,7 @@ package misdf
 import "base:runtime"
 import "core:math/linalg"
 
+MULTI_DIST_DEFAULT: MultiDistance : min(f64)
 DISTANCE_DELTA_FACTOR :: 1.001
 
 OverlappingContourCombiner :: struct {
@@ -58,8 +59,90 @@ occ_free :: proc(occ: OverlappingContourCombiner) {
     delete(occ.edge_selectors)
 }
 
-occ_distance :: proc "contextless" (occ: OverlappingContourCombiner) -> MultiDistance {
-    return 0
+occ_distance :: proc(occ: OverlappingContourCombiner) -> MultiDistance {
+    contour_count := len(occ.edge_selectors)
+
+    assert(len(occ.windings) == contour_count)
+
+    shape_selector, inner_selector, outer_selector: MultiDistanceSelector
+    mds_reset(&shape_selector, occ.point)
+    mds_reset(&inner_selector, occ.point)
+    mds_reset(&outer_selector, occ.point)
+
+    #no_bounds_check for i in 0..<contour_count {
+        edge_dist := mds_distance(occ.edge_selectors[i])
+        mds_merge(&shape_selector, occ.edge_selectors[i])
+
+        median := median(edge_dist)
+
+        if occ.windings[i] > 0 && median >= 0 {
+            mds_merge(&inner_selector, occ.edge_selectors[i])
+        }
+
+        if occ.windings[i] < 0 && median <= 0 {
+            mds_merge(&outer_selector, occ.edge_selectors[i])
+        }
+    }
+
+    shape_dist := mds_distance(shape_selector)
+    inner_dist := mds_distance(inner_selector)
+    outer_dist := mds_distance(outer_selector)
+
+    inner_scalar_dist := median(inner_dist)
+    outer_scalar_dist := median(outer_dist)
+
+    distance := MULTI_DIST_DEFAULT
+    winding: int
+
+    if inner_scalar_dist >= 0 && abs(inner_scalar_dist) <= abs(outer_scalar_dist) {
+        distance = inner_dist
+        winding = 1
+
+        #no_bounds_check for i in 0..<contour_count {
+            if occ.windings[i] <= 0 do continue
+
+            contour_dist := mds_distance(occ.edge_selectors[i])
+            contour_median := median(contour_dist)
+
+            if abs(contour_median) < abs(outer_scalar_dist) && contour_median > median(distance) {
+                distance = contour_dist
+            }
+        }
+    } else if outer_scalar_dist <= 0 && abs(outer_scalar_dist) < abs(inner_scalar_dist) {
+        distance = outer_dist
+        winding = -1
+
+        #no_bounds_check for i in 0..<contour_count {
+            if occ.windings[i] >= 0 do continue
+
+            contour_dist := mds_distance(occ.edge_selectors[i])
+            contour_median := median(contour_dist)
+
+            if abs(contour_median) < abs(inner_scalar_dist) && contour_median < median(distance) {
+                distance = contour_dist
+            }
+        }
+    } else {
+        return shape_dist
+    }
+
+    #no_bounds_check for i in 0..<contour_count {
+        if occ.windings[i] == winding do continue
+
+        contour_dist := mds_distance(occ.edge_selectors[i])
+        contour_median := median(contour_dist)
+        distance_median := median(distance)
+
+        if contour_median * distance_median >= 0 && abs(contour_median) < abs(distance_median) {
+            distance = contour_dist
+        }
+    }
+
+    if median(distance) == median(shape_dist) {
+        distance = shape_dist
+    }
+
+    return distance
 }
 
 occ_reset :: proc "contextless" (occ: ^OverlappingContourCombiner, p: Point2) {
@@ -132,6 +215,12 @@ mds_add_edge :: proc(mds: ^MultiDistanceSelector, cache: ^EdgeCache, prev, edge,
 
     cache.a_domain = add
     cache.b_domain = bdd
+}
+
+mds_merge :: #force_inline proc "contextless" (a: ^MultiDistanceSelector, b: MultiDistanceSelector) {
+    pds_merge(&a.r, b.r)
+    pds_merge(&a.g, b.g)
+    pds_merge(&a.b, b.b)
 }
 
 mds_reset :: proc "contextless" (mds: ^MultiDistanceSelector, p: Point2) {
@@ -215,6 +304,22 @@ pds_add_edge_perp_dist :: #force_inline proc "contextless" (pds: ^PerpendicularD
 
     if distance >= 0 && distance < pds.min_pos_perpendicular {
         pds.min_pos_perpendicular = distance
+    }
+}
+
+pds_merge :: proc "contextless" (a: ^PerpendicularDistanceSelector, b: PerpendicularDistanceSelector) {
+    if signed_dist_lt(b.min_true, a.min_true) {
+        a.min_true = b.min_true
+        a.near_edge = b.near_edge
+        a.near_edge_param = b.near_edge_param
+    }
+
+    if b.min_neg_perpendicular > a.min_neg_perpendicular {
+        a.min_neg_perpendicular = b.min_neg_perpendicular
+    }
+
+    if b.min_pos_perpendicular > a.min_pos_perpendicular {
+        a.min_pos_perpendicular = b.min_pos_perpendicular
     }
 }
 
