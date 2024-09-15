@@ -43,15 +43,52 @@ DistanceCheckMode :: enum {
 }
 
 @(private)
+ClasifierFlag :: enum {
+    None = 0,
+    Candidate = 1,
+    Artifact = 2
+}
+
+@(private)
 ArtifactClassifier :: struct {
     span: f64,
     protected_flag: bool
 }
 
 @(private)
+ShapeArtifactClassifier :: struct {
+    texel_size: Vec2,
+    distance_mapping: DistanceMapping,
+    sdf: Bitmap(f32),
+    msd: []f32,
+    shape_coord: Point2,
+    sdf_coord: Point2,
+}
+
+@(private)
 StencilFlag :: enum u8 {
     Error = 1,
     Protected = 2
+}
+
+@(private)
+HasDiagonalArtifactArgs :: struct {
+    da, dbc, dd: f32,
+    tex0, tex1: f64
+}
+
+@(private)
+DiagonalArtifactComputeIter :: struct {
+    solutions: int,
+    t: [2]f64,
+    i: int,
+}
+
+@(private)
+EvaluateArgs :: struct {
+    t: f64,
+    m: f32,
+    flags: int
 }
 
 error_correction :: proc(
@@ -87,7 +124,7 @@ error_correction :: proc(
     }
 
     if config.distance_check_mode == .Full || config.distance_check_mode == .EdgeOnly {
-        // TODO: find_errors()
+        find_errors_shape(&stencil, sdf^, shape^, xform, config.min_deviation_ratio, config.min_improve_ratio)
     }
 
     apply(stencil, sdf)
@@ -300,16 +337,74 @@ find_errors :: proc "contextless" (stencil: ^Bitmap(u8), sdf: Bitmap(f32), xform
             t := bitmap_at(sdf, x, y + 1)
 
             // Mark current texel c with the error flag if an artifact occurs when it's interpolated with any of its 8 neighbors.
-            result := x > 0 && has_linear_artifact({ h_span, flag }, cm, c, l) ||
-                y > 0 && has_linear_artifact({ v_span, flag }, cm, c, b) ||
-                x < sdf.width - 1 && has_linear_artifact({ h_span, flag }, cm, c, r) ||
-                y < sdf.height - 1 && has_linear_artifact({ v_span, flag }, cm, c, t) ||
-                x > 0 && y > 0 && has_diagonal_artifact({ d_span, flag }, cm, c, l, b, bitmap_at(sdf, x - 1, y - 1)) ||
-                x < sdf.width - 1 && y > 0 && has_diagonal_artifact({ d_span, flag }, cm, c, r, b, bitmap_at(sdf, x + 1, y - 1)) ||
-                x > 0 && y < sdf.height - 1 && has_diagonal_artifact({ d_span, flag }, cm, c, l, t, bitmap_at(sdf, x - 1, y + 1)) ||
-                x < sdf.width - 1 && y < sdf.height - 1 && has_diagonal_artifact({ d_span, flag }, cm, c, r, t, bitmap_at(sdf, x + 1, y + 1))
+            result := x > 0 && has_linear_artifact(ArtifactClassifier { h_span, flag }, cm, c, l) ||
+                y > 0 && has_linear_artifact(ArtifactClassifier { v_span, flag }, cm, c, b) ||
+                x < sdf.width - 1 && has_linear_artifact(ArtifactClassifier { h_span, flag }, cm, c, r) ||
+                y < sdf.height - 1 && has_linear_artifact(ArtifactClassifier { v_span, flag }, cm, c, t) ||
+                x > 0 && y > 0 && has_diagonal_artifact(ArtifactClassifier { d_span, flag }, cm, c, l, b, bitmap_at(sdf, x - 1, y - 1)) ||
+                x < sdf.width - 1 && y > 0 && has_diagonal_artifact(ArtifactClassifier { d_span, flag }, cm, c, r, b, bitmap_at(sdf, x + 1, y - 1)) ||
+                x > 0 && y < sdf.height - 1 && has_diagonal_artifact(ArtifactClassifier { d_span, flag }, cm, c, l, t, bitmap_at(sdf, x - 1, y + 1)) ||
+                x < sdf.width - 1 && y < sdf.height - 1 && has_diagonal_artifact(ArtifactClassifier { d_span, flag }, cm, c, r, t, bitmap_at(sdf, x + 1, y + 1))
 
             bitmap_at(stencil^, x, y)[0] |= u8(StencilFlag.Error) * u8(result)
+        }
+    }
+}
+
+find_errors_shape :: proc "contextless" (
+    stencil: ^Bitmap(u8),
+    sdf: Bitmap(f32),
+    shape: Shape,
+    xform: SDFTransformation,
+    min_deviation_ratio, min_improve_ratio: f64
+) {
+    // Compute the expected deltas between values of horizontally, vertically, and diagonally adjacent texels.
+    h_span := min_deviation_ratio * linalg.length(unproject_vec2(xform.projection, { xform.distance_mapping.scale , 0 }))
+    v_span := min_deviation_ratio * linalg.length(unproject_vec2(xform.projection, { 0, xform.distance_mapping.scale }))
+    d_span := min_deviation_ratio * linalg.length(unproject_vec2(xform.projection, xform.distance_mapping.scale))
+
+    texel_size := unproject_vec2(xform.projection, 1)
+    if shape.inverse_y_axis do texel_size.y = -texel_size.y
+
+    rtl := false
+
+    for y in 0..<sdf.height {
+        row := sdf.height - y - 1 if shape.inverse_y_axis else y
+        for col in 0..<sdf.height {
+            x := sdf.width - col - 1 if rtl else col
+            texel := bitmap_at(stencil^, x, row)
+
+            if (texel[0] & u8(StencilFlag.Error)) != 0 do continue
+
+            c := bitmap_at(sdf, x, row)
+            cm := median([3]f32 { c[0], c[1], c[2]})
+
+            flag := (texel[0] & u8(StencilFlag.Protected)) != 0
+            sac := ShapeArtifactClassifier {
+                texel_size = texel_size,
+                distance_mapping = xform.distance_mapping,
+                sdf = sdf,
+                msd = c,
+                shape_coord = unproject(xform.projection, { f64(x) + 0.5, f64(y) + 0.5 }),
+                sdf_coord = { f64(x) + 0.5, f64(row) + 0.5 },
+            }
+
+            l := bitmap_at(sdf, x - 1, row)
+            b := bitmap_at(sdf, x, row - 1)
+            r := bitmap_at(sdf, x + 1, row)
+            t := bitmap_at(sdf, x, row + 1)
+
+            // Mark current texel c with the error flag if an artifact occurs when it's interpolated with any of its 8 neighbors.
+            result := x > 0 && has_linear_artifact_shape(sac, { h_span, flag }, {-1, 0}, cm, c, l) ||
+                row > 0 && has_linear_artifact_shape(sac, { v_span, flag }, {0, -1}, cm, c, b) ||
+                x < sdf.width - 1 && has_linear_artifact_shape(sac, { h_span, flag }, {+1, 0}, cm, c, r) ||
+                row < sdf.height - 1 && has_linear_artifact_shape(sac, { v_span, flag }, {0, +1}, cm, c, t) ||
+                x > 0 && row > 0 && has_diagonal_artifact_shape(sac, { d_span, flag }, {-1, -1}, cm, c, l, b, bitmap_at(sdf, x - 1, row - 1)) ||
+                x < sdf.width - 1 && row > 0 && has_diagonal_artifact_shape(sac, { d_span, flag }, {+1, -1}, cm, c, r, b, bitmap_at(sdf, x + 1, row - 1)) ||
+                x > 0 && row < sdf.height - 1 && has_diagonal_artifact_shape(sac, { d_span, flag }, {-1, +1}, cm, c, l, t, bitmap_at(sdf, x - 1, row + 1)) ||
+                x < sdf.width - 1 && row < sdf.height - 1 && has_diagonal_artifact_shape(sac, { d_span, flag }, {+1, +1}, cm, c, r, t, bitmap_at(sdf, x + 1, row + 1))
+
+            texel[0] |= u8(StencilFlag.Error) * u8(result)
         }
     }
 }
@@ -320,10 +415,68 @@ has_linear_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a, b
     // Out of the pair, only report artifacts for the texel further from the edge to minimize side effects.
     if abs(am - 0.5) < abs(bm - 0.5) do return false
 
+    args: [3][2]f32 = {
+        { a[1] - a[0], b[1] - b[0] },
+        { a[2] - a[1], b[2] - b[1] },
+        { a[0] - a[2], b[0] - b[2] }
+    }
+
     // Check points where each pair of color channels meets.
-    return has_linear_artifact_inner(ac, am, bm, a, b, a[1] - a[0], b[1] - b[0]) ||
-        has_linear_artifact_inner(ac, am, bm, a, b, a[2] - a[1], b[2] - b[1]) ||
-        has_linear_artifact_inner(ac, am, bm, a, b, a[0] - a[2], b[0] - b[2])
+    #unroll for i in 0..<len(args) {
+        arg := args[i]
+        da, db := arg[0], arg[1]
+
+        // Find interpolation ratio t (0 < t < 1) where two color channels are equal (mix(da, db, t) == 0).
+        t := f64(da / (da - db))
+
+        if t > ARTIFACT_T_EPSILON && t < 1 - ARTIFACT_T_EPSILON {
+            // Interpolate median at t and let the classifier decide if its value indicates an artifact.
+            xm := interpolated_median(a, b, t)
+            range_flags := range_test(ac, 0, 1, t, am, bm, xm)
+
+            if (range_flags & 2) != 0 do return true
+        }
+    }
+
+    return false
+}
+
+has_linear_artifact_shape :: proc "contextless" (
+    sac: ShapeArtifactClassifier,
+    ac: ArtifactClassifier,
+    direction: Vec2,
+    am: f32,
+    a, b: []f32
+) -> bool #no_bounds_check {
+    bm := median([3]f32 { b[0], b[1], b[2] })
+
+    // Out of the pair, only report artifacts for the texel further from the edge to minimize side effects.
+    if abs(am - 0.5) < abs(bm - 0.5) do return false
+
+    args: [3][2]f32 = {
+        { a[1] - a[0], b[1] - b[0] },
+        { a[2] - a[1], b[2] - b[1] },
+        { a[0] - a[2], b[0] - b[2] }
+    }
+
+    // Check points where each pair of color channels meets.
+    #unroll for i in 0..<len(args) {
+        arg := args[i]
+        da, db := arg[0], arg[1]
+
+        // Find interpolation ratio t (0 < t < 1) where two color channels are equal (mix(da, db, t) == 0).
+        t := f64(da / (da - db))
+
+        if t > ARTIFACT_T_EPSILON && t < 1 - ARTIFACT_T_EPSILON {
+            // Interpolate median at t and let the classifier decide if its value indicates an artifact.
+            xm := interpolated_median(a, b, t)
+            range_flags := range_test(ac, 0, 1, t, am, bm, xm)
+
+            if sac_evaluate(sac, direction, t, xm, range_flags) do return true
+        }
+    }
+
+    return false
 }
 
 has_diagonal_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a, b, c, d: []f32) -> bool #no_bounds_check {
@@ -332,6 +485,53 @@ has_diagonal_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a,
     // Out of the pair, only report artifacts for the texel further from the edge to minimize side effects.
     if abs(am - 0.5) < abs(dm - 0.5) do return false
 
+    args: [3]HasDiagonalArtifactArgs
+    l, q := prepare_diagonal_artifact_checks(&args, am, a, b, c, d)
+
+    #unroll for i in 0..<len(args) {
+        arg := args[i]
+        iter := diagonal_artifact_compute_iter(arg.da, arg.dbc, arg.dd)
+
+        for eval_args in diagonal_artifact_compute_iter_next(&iter, ac, am, dm, a, l[:], q[:], arg.tex0, arg.tex1) {
+            if (eval_args.flags & 2) != 0 do return true
+        }
+    }
+
+    return false
+}
+
+has_diagonal_artifact_shape :: proc "contextless" (
+    sac: ShapeArtifactClassifier,
+    ac: ArtifactClassifier,
+    direction: Vec2,
+    am: f32,
+    a, b, c, d: []f32
+) -> bool #no_bounds_check {
+    dm := median([3]f32 { d[0], d[1], d[2] })
+
+    // Out of the pair, only report artifacts for the texel further from the edge to minimize side effects.
+    if abs(am - 0.5) < abs(dm - 0.5) do return false
+
+    args: [3]HasDiagonalArtifactArgs
+    l, q := prepare_diagonal_artifact_checks(&args, am, a, b, c, d)
+
+    #unroll for i in 0..<len(args) {
+        arg := args[i]
+        iter := diagonal_artifact_compute_iter(arg.da, arg.dbc, arg.dd)
+
+        for eval_args in diagonal_artifact_compute_iter_next(&iter, ac, am, dm, a, l[:], q[:], arg.tex0, arg.tex1) {
+            if sac_evaluate(sac, direction, eval_args.t, eval_args.m, eval_args.flags) do return true
+        }
+    }
+
+    return false
+}
+
+prepare_diagonal_artifact_checks :: #force_inline proc "contextless" (
+    args: ^[3]HasDiagonalArtifactArgs,
+    am: f32,
+    a, b, c, d: []f32
+) -> (l, q: [3]f32) #no_bounds_check {
     abc := [3]f32 {
         a[0] - b[0] - c[0],
         a[1] - b[1] - c[1],
@@ -339,14 +539,14 @@ has_diagonal_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a,
     }
 
     // Compute the linear terms for bilinear interpolation.
-    l := []f32 {
+    l = {
         -a[0] - abc[0],
         -a[1] - abc[1],
         -a[2] - abc[2]
     }
 
     // Compute the quadratic terms for bilinear interpolation.
-    q := []f32 {
+    q = {
         d[0] + abc[0],
         d[1] + abc[1],
         d[2] + abc[2]
@@ -359,45 +559,57 @@ has_diagonal_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a,
         f64(-0.5 * l[2] / q[2])
     }
 
-    return has_diagonal_artifact_inner(ac, am, dm, a, l, q, a[1] - a[0], b[1] - b[0] + c[1] - c[0], d[1] - d[0], tex[0], tex[1]) ||
-        has_diagonal_artifact_inner(ac, am, dm, a, l, q, a[2] - a[1], b[2] - b[1] + c[2] - c[1], d[2] - d[1], tex[1], tex[2]) ||
-        has_diagonal_artifact_inner(ac, am, dm, a, l, q, a[0] - a[2], b[0] - b[2] + c[0] - c[2], d[0] - d[2], tex[2], tex[0])
-}
-
-has_linear_artifact_inner :: proc "contextless" (ac: ArtifactClassifier, am, bm: f32, a, b: []f32, da, db: f32) -> bool {
-    // Find interpolation ratio t (0 < t < 1) where two color channels are equal (mix(da, db, t) == 0).
-    t := f64(da / (da - db))
-
-    if t > ARTIFACT_T_EPSILON && t < 1 - ARTIFACT_T_EPSILON {
-        // Interpolate median at t and let the classifier decide if its value indicates an artifact.
-        xm := interpolated_median(a, b, t)
-        range_flags := range_test(ac, 0, 1, t, am, bm, xm)
-
-        return (range_flags & 2) != 0
+    args[0] = HasDiagonalArtifactArgs {
+        da = a[1] - a[0],
+        dbc = b[1] - b[0] + c[1] - c[0],
+        dd = d[1] - d[0],
+        tex0 = tex[0],
+        tex1 = tex[1]
     }
 
-    return false
+    args[1] = HasDiagonalArtifactArgs {
+        da = a[2] - a[1],
+        dbc = b[2] - b[1] + c[2] - c[1],
+        dd = d[2] - d[1],
+        tex0 = tex[1],
+        tex1 = tex[2]
+    }
+
+    args[2] = HasDiagonalArtifactArgs {
+        da = a[0] - a[2],
+        dbc = b[0] - b[2] + c[0] - c[2],
+        dd = d[0] - d[2],
+        tex0 = tex[2],
+        tex1 = tex[0]
+    }
+
+    return
 }
 
-has_diagonal_artifact_inner :: proc "contextless" (
+diagonal_artifact_compute_iter :: proc "contextless" (da, dbc, dd: f32) -> DiagonalArtifactComputeIter {
+    // Find interpolation ratios t (0 < t[i] < 1) where two color channels are equal.
+    t, solutions := solve_quadratic(f64(dd - dbc + da), f64(dbc - da - da), f64(da))
+    i := 0
+
+    return { solutions, t, i }
+}
+
+diagonal_artifact_compute_iter_next :: proc "contextless" (
+    iter: ^DiagonalArtifactComputeIter,
     ac: ArtifactClassifier,
     am, dm: f32,
     a, l, q: []f32,
-    da, dbc, dd: f32,
     tex0, tex1: f64
-) -> bool #no_bounds_check {
-    // Find interpolation ratios t (0 < t[i] < 1) where two color channels are equal.
-    t, solutions := solve_quadratic(f64(dd - dbc + da), f64(dbc - da - da), f64(da))
-
-    for i in 0..<solutions {
+) -> (EvaluateArgs, bool) #no_bounds_check {
+    for i in iter.i..<iter.solutions {
         // Solutions t[i] == 0 and t[i] == 1 are singularities and occur very often because two channels are usually equal at texels.
-        if t[i] <= ARTIFACT_T_EPSILON || t[i] >= 1 - ARTIFACT_T_EPSILON do continue
+        if iter.t[i] <= ARTIFACT_T_EPSILON || iter.t[i] >= 1 - ARTIFACT_T_EPSILON do continue
 
         // Interpolate median xm at t.
-        xm := interpolated_median(a, l, q, t[i])
+        xm := interpolated_median(a, l, q, iter.t[i])
 
         // Determine if xm deviates too much from medians of a, d.
-        range_flags := range_test(ac, 0, 1, t[i], am, dm, xm)
+        range_flags := range_test(ac, 0, 1, iter.t[i], am, dm, xm)
 
         // Additionally, check xm against the interpolated medians at the local extremes tex0, tex1.
         t_end := [2]f64 { 0, 1 }
@@ -408,9 +620,9 @@ has_diagonal_artifact_inner :: proc "contextless" (
             t_end = { 0, 1 }
             em = { am, dm }
 
-            t_end[int(tex0 > t[i])] = tex0
-            em[int(tex0 > t[i])] = interpolated_median(a, l, q, tex0)
-            range_flags |= range_test(ac, t_end[0], t_end[1], t[i], em[0], em[1], xm)
+            t_end[int(tex0 > iter.t[i])] = tex0
+            em[int(tex0 > iter.t[i])] = interpolated_median(a, l, q, tex0)
+            range_flags |= range_test(ac, t_end[0], t_end[1], iter.t[i], em[0], em[1], xm)
         }
 
         // tex1
@@ -418,24 +630,25 @@ has_diagonal_artifact_inner :: proc "contextless" (
             t_end = { 0, 1 }
             em = { am, dm }
 
-            t_end[int(tex1 > t[i])] = tex1
-            em[int(tex1 > t[i])] = interpolated_median(a, l, q, tex1)
-            range_flags |= range_test(ac, t_end[0], t_end[1], t[i], em[0], em[1], xm)
+            t_end[int(tex1 > iter.t[i])] = tex1
+            em[int(tex1 > iter.t[i])] = interpolated_median(a, l, q, tex1)
+            range_flags |= range_test(ac, t_end[0], t_end[1], iter.t[i], em[0], em[1], xm)
         }
 
-        if (range_flags & 2) != 0 do return true
+        iter.i = i + 1
+        result := EvaluateArgs {
+            t = iter.t[i],
+            m = xm,
+            flags = range_flags
+        }
+
+        return result, true
     }
 
-    return false
+    return {}, false
 }
 
 range_test :: #force_inline proc "contextless" (ac: ArtifactClassifier, at, bt, xt: f64, am, bm, xm: f32) -> int {
-    ClasifierFlag :: enum {
-        None = 0,
-        Candidate = 1,
-        Artifact = 2
-    }
-
     // For protected texels, only consider inversion artifacts (interpolated median has different sign than boundaries).
     // For the rest, it is sufficient that the interpolated median is outside its boundaries.
 
@@ -461,6 +674,33 @@ range_test :: #force_inline proc "contextless" (ac: ArtifactClassifier, at, bt, 
     return int(ClasifierFlag.None)
 }
 
+sac_evaluate :: proc "contextless" (ac: ShapeArtifactClassifier, direction: Vec2, t: f64, m: f32, flags: int) -> bool #no_bounds_check {
+    if (flags & int(ClasifierFlag.Candidate)) == 0 do return false
+    if (flags & int(ClasifierFlag.Artifact)) != 0 do return true
+
+    t_vector := t * direction
+    old_msd, new_msd: [3]f32
+
+    // Compute the color that would be currently interpolated at the artifact candidate's position.
+    sdf_coord := ac.sdf_coord + Point2(t_vector)
+    bitmap_interpolate(&old_msd, ac.sdf, sdf_coord)
+
+    // Compute the color that would be interpolated at the artifact candidate's position if error correction was applied on the current texel.
+    a_weight := f32((1 - abs(t_vector.x)) * (1 - abs(t_vector.y)))
+    a_psd := median([3]f32 { ac.msd[0], ac.msd[1], ac.msd[2] })
+    new_msd[0] = old_msd[0] + a_weight * (a_psd - ac.msd[0])
+    new_msd[1] = old_msd[1] + a_weight * (a_psd - ac.msd[1])
+    new_msd[2] = old_msd[2] + a_weight * (a_psd - ac.msd[2])
+
+    // Compute the evaluated distance (interpolated median) before and after error correction, as well as the exact shape distance.
+    old_psd := median(old_msd)
+    new_psd := median(new_msd)
+
+    // TODO: Port ShapeDistanceFinder<ContourCombiner<PerpendicularDistanceSelector>
+
+    return false
+}
+
 interpolated_median :: proc {
     interpolated_median_linear,
     interpolated_median_bilinear
@@ -480,4 +720,31 @@ interpolated_median_bilinear :: #force_inline proc "contextless" (a, l, q: []f32
         t * (t * f64(q[1]) + f64(l[1])) + f64(a[1]),
         t * (t * f64(q[2]) + f64(l[2])) + f64(a[2])
     }))
+}
+
+@(private)
+bitmap_interpolate :: proc "contextless" (output: ^[3]f32, bitmap: Bitmap(f32), pos: Point2) {
+    pos := pos
+    pos -= 0.5
+
+    l := int(math.floor(pos.x))
+    b := int(math.floor(pos.y))
+    r := l + 1
+    t := b + 1
+
+    lr := pos.x - f64(l)
+    bt := pos.y - f64(b)
+
+    l = clamp(l, 0, int(bitmap.width - 1))
+    r = clamp(r, 0, int(bitmap.width - 1))
+    b = clamp(b, 0, int(bitmap.height - 1))
+    t = clamp(t, 0, int(bitmap.height - 1))
+
+    for i in 0..<bitmap.channels {
+        output[i] = mix(
+            mix(bitmap_at(bitmap, l, b)[i], bitmap_at(bitmap, r, b)[i], lr),
+            mix(bitmap_at(bitmap, l, t)[i], bitmap_at(bitmap, r, t)[i], lr),
+            bt
+        );
+    }
 }
