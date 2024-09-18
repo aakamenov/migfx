@@ -47,23 +47,25 @@ generate_msdf :: proc(
     assert(bitmap.channels == 3)
 
     context.allocator = alloc
-    generate_msdf_overlapping(bitmap, shape, xform)
-    error_correction(bitmap, shape, xform, config)
+
+    finder := distance_finder_make(.Multi, shape)
+    defer distance_finder_free(finder)
+
+    generate_msdf_overlapping(bitmap, &finder, xform)
+    error_correction(bitmap, &finder, xform, config)
 }
 
 @(private)
-generate_msdf_overlapping :: proc(bitmap: ^Bitmap(f32), shape: ^Shape, xform: SDFTransformation) {
+generate_msdf_overlapping :: proc(bitmap: ^Bitmap(f32), finder: ^DistanceFinder, xform: SDFTransformation) {
     rtl := false
-    finder := distance_finder_make(shape)
-    defer distance_finder_free(finder)
 
     for y in 0..<bitmap.height {
-        row := bitmap.height - y - 1 if shape.inverse_y_axis else y
+        row := bitmap.height - y - 1 if finder.shape.inverse_y_axis else y
 
         for col in 0..<bitmap.width {
             x := bitmap.width - col - 1 if rtl else col
             p := unproject(xform.projection, { f64(x) + .5, f64(y) + .5 })
-            distance := shape_distance(&finder, p)
+            distance := distance_finder_find(finder, p)
 
             pixel := bitmap_at(bitmap^, x, row)
             pixel[0] = f32(xform.distance_mapping.scale * (distance.r + xform.distance_mapping.translate))

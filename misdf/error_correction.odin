@@ -57,7 +57,9 @@ ArtifactClassifier :: struct {
 
 @(private)
 ShapeArtifactClassifier :: struct {
+    finder: ^DistanceFinder,
     texel_size: Vec2,
+    min_improve_ratio: f64,
     distance_mapping: DistanceMapping,
     sdf: Bitmap(f32),
     msd: []f32,
@@ -93,7 +95,7 @@ EvaluateArgs :: struct {
 
 error_correction :: proc(
     sdf: ^Bitmap(f32),
-    shape: ^Shape,
+    finder: ^DistanceFinder,
     xform: SDFTransformation,
     config: ErrorCorrectionConfig
 ) {
@@ -104,7 +106,7 @@ error_correction :: proc(
 
     #partial switch config.mode {
         case .EdgePriority:
-            protect_corners(stencil, shape^, xform)
+            protect_corners(stencil, finder.shape^, xform)
             protect_edges(stencil, sdf^, xform)
         case .EdgeOnly:
             // Protect all
@@ -124,7 +126,10 @@ error_correction :: proc(
     }
 
     if config.distance_check_mode == .Full || config.distance_check_mode == .EdgeOnly {
-        find_errors_shape(&stencil, sdf^, shape^, xform, config.min_deviation_ratio, config.min_improve_ratio)
+        distance_finder_reset(finder)
+        finder.occ.type = .Perpendicular
+
+        find_errors_shape(&stencil, sdf^, finder, xform, config.min_deviation_ratio, config.min_improve_ratio)
     }
 
     apply(stencil, sdf)
@@ -351,10 +356,10 @@ find_errors :: proc "contextless" (stencil: ^Bitmap(u8), sdf: Bitmap(f32), xform
     }
 }
 
-find_errors_shape :: proc "contextless" (
+find_errors_shape :: proc(
     stencil: ^Bitmap(u8),
     sdf: Bitmap(f32),
-    shape: Shape,
+    finder: ^DistanceFinder,
     xform: SDFTransformation,
     min_deviation_ratio, min_improve_ratio: f64
 ) {
@@ -364,12 +369,12 @@ find_errors_shape :: proc "contextless" (
     d_span := min_deviation_ratio * linalg.length(unproject_vec2(xform.projection, xform.distance_mapping.scale))
 
     texel_size := unproject_vec2(xform.projection, 1)
-    if shape.inverse_y_axis do texel_size.y = -texel_size.y
+    if finder.shape.inverse_y_axis do texel_size.y = -texel_size.y
 
     rtl := false
 
     for y in 0..<sdf.height {
-        row := sdf.height - y - 1 if shape.inverse_y_axis else y
+        row := sdf.height - y - 1 if finder.shape.inverse_y_axis else y
         for col in 0..<sdf.height {
             x := sdf.width - col - 1 if rtl else col
             texel := bitmap_at(stencil^, x, row)
@@ -381,7 +386,9 @@ find_errors_shape :: proc "contextless" (
 
             flag := (texel[0] & u8(StencilFlag.Protected)) != 0
             sac := ShapeArtifactClassifier {
+                finder = finder,
                 texel_size = texel_size,
+                min_improve_ratio = min_improve_ratio,
                 distance_mapping = xform.distance_mapping,
                 sdf = sdf,
                 msd = c,
@@ -441,7 +448,7 @@ has_linear_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a, b
     return false
 }
 
-has_linear_artifact_shape :: proc "contextless" (
+has_linear_artifact_shape :: proc(
     sac: ShapeArtifactClassifier,
     ac: ArtifactClassifier,
     direction: Vec2,
@@ -500,7 +507,7 @@ has_diagonal_artifact :: proc "contextless" (ac: ArtifactClassifier, am: f32, a,
     return false
 }
 
-has_diagonal_artifact_shape :: proc "contextless" (
+has_diagonal_artifact_shape :: proc(
     sac: ShapeArtifactClassifier,
     ac: ArtifactClassifier,
     direction: Vec2,
@@ -674,7 +681,7 @@ range_test :: #force_inline proc "contextless" (ac: ArtifactClassifier, at, bt, 
     return int(ClasifierFlag.None)
 }
 
-sac_evaluate :: proc "contextless" (ac: ShapeArtifactClassifier, direction: Vec2, t: f64, m: f32, flags: int) -> bool #no_bounds_check {
+sac_evaluate :: proc(sac: ShapeArtifactClassifier, direction: Vec2, t: f64, m: f32, flags: int) -> bool #no_bounds_check {
     if (flags & int(ClasifierFlag.Candidate)) == 0 do return false
     if (flags & int(ClasifierFlag.Artifact)) != 0 do return true
 
@@ -682,23 +689,25 @@ sac_evaluate :: proc "contextless" (ac: ShapeArtifactClassifier, direction: Vec2
     old_msd, new_msd: [3]f32
 
     // Compute the color that would be currently interpolated at the artifact candidate's position.
-    sdf_coord := ac.sdf_coord + Point2(t_vector)
-    bitmap_interpolate(&old_msd, ac.sdf, sdf_coord)
+    sdf_coord := sac.sdf_coord + Point2(t_vector)
+    bitmap_interpolate(&old_msd, sac.sdf, sdf_coord)
 
     // Compute the color that would be interpolated at the artifact candidate's position if error correction was applied on the current texel.
     a_weight := f32((1 - abs(t_vector.x)) * (1 - abs(t_vector.y)))
-    a_psd := median([3]f32 { ac.msd[0], ac.msd[1], ac.msd[2] })
-    new_msd[0] = old_msd[0] + a_weight * (a_psd - ac.msd[0])
-    new_msd[1] = old_msd[1] + a_weight * (a_psd - ac.msd[1])
-    new_msd[2] = old_msd[2] + a_weight * (a_psd - ac.msd[2])
+    a_psd := median([3]f32 { sac.msd[0], sac.msd[1], sac.msd[2] })
+    new_msd[0] = old_msd[0] + a_weight * (a_psd - sac.msd[0])
+    new_msd[1] = old_msd[1] + a_weight * (a_psd - sac.msd[1])
+    new_msd[2] = old_msd[2] + a_weight * (a_psd - sac.msd[2])
 
     // Compute the evaluated distance (interpolated median) before and after error correction, as well as the exact shape distance.
-    old_psd := median(old_msd)
-    new_psd := median(new_msd)
+    old_psd := f64(median(old_msd))
+    new_psd := f64(median(new_msd))
 
-    // TODO: Port ShapeDistanceFinder<ContourCombiner<PerpendicularDistanceSelector>
+    distance := distance_finder_find(sac.finder, Point2(Vec2(sac.shape_coord) + t_vector * sac.texel_size))
+    ref_psd := sac.distance_mapping.scale * (distance[0] + sac.distance_mapping.translate)
 
-    return false
+    // Compare the differences of the exact distance and the before and after distances.
+    return sac.min_improve_ratio * abs(new_psd - ref_psd) < abs(old_psd - ref_psd)
 }
 
 interpolated_median :: proc {

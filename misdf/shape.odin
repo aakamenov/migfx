@@ -2,6 +2,7 @@ package misdf
 
 import "base:runtime"
 import "core:math"
+import "core:mem"
 
 // Threshold of the dot product of adjacent edge directions to be considered convergent.
 CORNER_DOT_EPSILON :: 0.000001
@@ -27,14 +28,17 @@ Bounds :: struct {
 
 Contour :: [dynamic]^EdgeSegment
 
-MultiDistance :: distinct [3]f64 // RGB
-MultiAndTrueDistance :: distinct [4]f64 // RGBA
+Distance :: distinct [4]f64 // RGBA
 
-distance_finder_make :: proc(shape: ^Shape, alloc: runtime.Allocator = context.allocator) -> DistanceFinder {
-    occ := occ_make(shape, alloc)
+distance_finder_make :: proc(
+    type: EdgeSelectorType,
+    shape: ^Shape,
+    alloc: runtime.Allocator = context.allocator
+) -> DistanceFinder {
+    occ := occ_make(type, shape, alloc)
 
     len := shape_edge_count(shape^)
-    cache := make([dynamic]EdgeCache, len, len, alloc)
+    cache := make([dynamic]EdgeCache, len, alloc)
 
     return { shape, occ, cache }
 }
@@ -44,7 +48,12 @@ distance_finder_free :: proc(d: DistanceFinder) {
     occ_free(d.occ)
 }
 
-shape_distance :: proc(finder: ^DistanceFinder, origin: Point2) -> MultiDistance {
+distance_finder_reset :: proc(finder: ^DistanceFinder) {
+    mem.zero_slice(finder.cache[:])
+    mem.zero_slice(finder.occ.edge_selectors[:])
+}
+
+distance_finder_find :: proc(finder: ^DistanceFinder, origin: Point2) -> Distance {
     occ_reset(&finder.occ, origin)
 
     cache_index: uint
@@ -59,13 +68,16 @@ shape_distance :: proc(finder: ^DistanceFinder, origin: Point2) -> MultiDistance
         for edge in contour {
             next := edge
 
-            if finder.cache != nil {
-                mds_add_edge(selector, &finder.cache[cache_index], prev, curr, next)
-                cache_index += 1
-            } else {
-                dummy: EdgeCache
-                mds_add_edge(selector, &dummy, prev, curr, next)
-            }
+            edge_selector_add_edge(selector, finder.occ.type, &finder.cache[cache_index], prev, curr, next)
+            cache_index += 1
+
+            // if finder.cache != nil {
+            //     edge_selector_add_edge(selector, finder.occ.type, &finder.cache[cache_index], prev, curr, next)
+            //     cache_index += 1
+            // } else {
+            //     dummy: EdgeCache
+            //     edge_selector_add_edge(selector, finder.occ.type, &dummy, prev, curr, next)
+            // }
 
             prev = curr
             curr = next
