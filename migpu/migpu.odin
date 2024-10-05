@@ -110,9 +110,9 @@ end_frame :: proc() {
 
 @(require_results)
 begin_draw :: proc() -> bool {
-	surface_texture := wgpu.SurfaceGetCurrentTexture(gfx.surface)
+    surface_texture := wgpu.SurfaceGetCurrentTexture(gfx.surface)
 
-	switch surface_texture.status {
+    switch surface_texture.status {
     	case .Success:
     		// All good, could check for `surface_texture.suboptimal` here.
     	case .Timeout, .Outdated, .Lost:
@@ -126,7 +126,7 @@ begin_draw :: proc() -> bool {
     		return false
     	case .OutOfMemory, .DeviceLost:
     		fmt.panicf("[triangle] get_current_texture status=%v", surface_texture.status)
-	}
+    }
 
     draw_state.surface_texture = surface_texture
     draw_state.command_encoder = wgpu.DeviceCreateCommandEncoder(gfx.device, nil)
@@ -137,20 +137,18 @@ begin_draw :: proc() -> bool {
 end_draw :: proc() {
     for rpass in stack_items(&draw_state.rpasses) {
         wgpu.RenderPassEncoderEnd(rpass.pass)
-    }
 
-	command_buffer := wgpu.CommandEncoderFinish(draw_state.command_encoder, nil)
-
-	wgpu.QueueSubmit(gfx.queue, { command_buffer })
-	wgpu.SurfacePresent(gfx.surface)
-
-    for rpass in stack_items(&draw_state.rpasses) {
         for view in draw_state.tex_views.items[rpass.tex_views_start:rpass.tex_views_end] {
             wgpu.TextureViewRelease(view)
         }
 
         wgpu.RenderPassEncoderRelease(rpass.pass)
     }
+
+    command_buffer := wgpu.CommandEncoderFinish(draw_state.command_encoder, nil)
+
+    wgpu.QueueSubmit(gfx.queue, { command_buffer })
+    wgpu.SurfacePresent(gfx.surface)
 
     wgpu.CommandBufferRelease(command_buffer)
     wgpu.CommandEncoderRelease(draw_state.command_encoder)
