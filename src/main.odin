@@ -1,20 +1,7 @@
 package main
 
-import "vendor:wgpu"
 import "../migpu"
-
-SHADER :: `
-@vertex
-fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4<f32> {
-	let x = f32(i32(in_vertex_index) - 1);
-	let y = f32(i32(in_vertex_index & 1u) * 2 - 1);
-	return vec4<f32>(x, y, 0.0, 1.0);
-}
-
-@fragment
-fn fs_main() -> @location(0) vec4<f32> {
-	return vec4<f32>(1.0, 0.0, 0.0, 1.0);
-}`
+import "../mi2d"
 
 main :: proc() {
     migpu.init(720, 480, "migpu triangle")
@@ -22,40 +9,12 @@ main :: proc() {
 
     migpu.set_target_fps(30)
 
-    shader_handle := migpu.make(SHADER, "vs_main", "fs_main")
-    shader := migpu.get(shader_handle)
-
-    layout := wgpu.DeviceCreatePipelineLayout(migpu.gfx.device, &{})
-    desc := wgpu.RenderPipelineDescriptor{
-       layout = layout,
-       vertex = wgpu.VertexState {
-			module = shader.module,
-            entryPoint = shader.vertex_main,
-	   },
-       fragment = &wgpu.FragmentState {
-			module = shader.module,
-			entryPoint = shader.fragment_main,
-			targetCount = 1,
-			targets = &wgpu.ColorTargetState {
-				format = migpu.FORMAT,
-				writeMask = wgpu.ColorWriteMaskFlags_All,
-			}
-		},
-       primitive = migpu.DEFAULT_PRIMITIVE_STATE,
-       multisample = migpu.DEFAULT_MULTISAMPLE_STATE
-    }
-
-    pipeline := wgpu.DeviceCreateRenderPipeline(
-	   migpu.gfx.device,
-	   &desc
-	)
-
-	defer wgpu.RenderPipelineRelease(pipeline)
-	defer wgpu.PipelineLayoutRelease(layout)
-	defer migpu.free(shader_handle)
+    mi2d.init()
+    defer mi2d.deinit()
 
     for !migpu.should_close() {
 		_ = migpu.begin_frame()
+		mi2d.begin_draw()
 
 		if migpu.begin_draw() {
 		    frame := migpu.surface_texture_view()
@@ -64,13 +23,36 @@ main :: proc() {
                     view = {
                         view = frame
                     },
-                    clear_value = { 0, 1, 0, 1 }
+                    clear_value = { 0, 0, 0, 1 }
                 }}
 		    })
 
-            wgpu.RenderPassEncoderSetPipeline(rpass, pipeline)
-            wgpu.RenderPassEncoderDraw(rpass, vertexCount=3, instanceCount=1, firstVertex=0, firstInstance=0)
+            width, height := migpu.window_size()
+            w, h := f32(width), f32(height)
+            size: f32 = 100.0
 
+            mi2d.draw_quad(
+                {0, 0, size, size},
+                {1, 0, 0, 1}
+            )
+            mi2d.draw_quad(
+                {(w - size), 0, size, size},
+                {0, 1, 0, 1}
+            )
+            mi2d.draw_quad(
+                {0, (h - size), size, size},
+                {0, 0, 1, 1}
+            )
+            mi2d.draw_quad(
+                {(w - size), (h - size), size, size},
+                {0, 1, 1, 1}
+            )
+            mi2d.draw_quad(
+                {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
+                {1, 0, 1, 1}
+            )
+
+            mi2d.end_draw(rpass, {w, h}, 2)
 			migpu.end_draw()
 		}
 

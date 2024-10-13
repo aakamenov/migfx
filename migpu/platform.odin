@@ -41,14 +41,14 @@ init :: proc(win_width, win_height: u32, title: cstring) {
 	wgpu.AdapterRequestDevice(gfx.adapter, nil, on_device)
     assert(gfx.device != nil)
 
-    w, h := glfw.GetWindowSize(gfx.window)
+    w, h := window_size()
 
 	gfx.surface_config = wgpu.SurfaceConfiguration {
 		device = gfx.device,
 		usage = { .RenderAttachment },
 		format = FORMAT,
-		width = u32(w),
-		height = u32(h),
+		width = w,
+		height = h,
 		presentMode = .Fifo,
 		alphaMode = .Auto
 	}
@@ -58,6 +58,12 @@ init :: proc(win_width, win_height: u32, title: cstring) {
 	gfx.queue = wgpu.DeviceGetQueue(gfx.device)
 
 	state_init()
+}
+
+window_size :: proc "contextless" () -> (u32, u32) {
+    w, h := glfw.GetWindowSize(gfx.window)
+
+    return u32(w), u32(h)
 }
 
 deinit :: proc() {
@@ -75,9 +81,9 @@ deinit :: proc() {
 
 @(private)
 resize :: proc() {
-    w, h := glfw.GetWindowSize(gfx.window)
-	gfx.surface_config.width = u32(w)
-	gfx.surface_config.height = u32(h)
+    w, h := window_size()
+	gfx.surface_config.width = w
+	gfx.surface_config.height = h
 
 	wgpu.SurfaceConfigure(gfx.surface, &gfx.surface_config)
 }

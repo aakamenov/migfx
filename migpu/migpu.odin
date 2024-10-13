@@ -73,13 +73,13 @@ stack_push :: #force_inline proc(stack: ^$T/Stack($V,$N), value: V) {
 }
 
 @(private)
-stack_pop :: #force_inline proc(stack: ^$T/Stack($V,$N)) {
+stack_pop :: #force_inline proc "contextless" (stack: ^$T/Stack($V,$N)) {
 	assert(stack.index > 0)
 	stack.index -= 1
 }
 
 @(private)
-stack_items :: #force_inline proc(stack: ^$T/Stack($V,$N)) -> []V {
+stack_items :: #force_inline proc "contextless" (stack: ^$T/Stack($V,$N)) -> []V {
 	return stack.items[:stack.index]
 }
 

@@ -9,7 +9,7 @@ Shader :: struct {
     fragment_main: cstring,
 }
 
-shader_make :: proc(code, vertex_main, fragment_main: cstring) -> pool.Handle(Shader) {
+shader_make :: proc(code, vertex_main, fragment_main: cstring) -> (pool.Handle(Shader), ^Shader) {
     module := wgpu.DeviceCreateShaderModule(
 	   gfx.device,
 	   &{
@@ -27,5 +27,5 @@ shader_make :: proc(code, vertex_main, fragment_main: cstring) -> pool.Handle(Sh
 	   fragment_main
 	}
 
-	return handle
+	return handle, slot
 }
