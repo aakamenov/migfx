@@ -4,7 +4,8 @@ struct Uniforms {
 
 struct Primitive {
     points: array<vec2f, 2>,
-    color: vec4f
+    color: vec4f,
+    radii: vec4f
 }
 
 struct VertexOut {
@@ -12,6 +13,7 @@ struct VertexOut {
     @location(0) point: vec2f,
     @location(1) instance_index: u32,
     @location(2) color: vec4f,
+    @location(3) radius: f32
 }
 
 @group(0)
@@ -22,15 +24,14 @@ var<uniform> uniforms: Uniforms;
 @binding(0)
 var<storage, read> primitives: array<Primitive>;
 
-fn sd_box(pos: vec2f, origin: vec2f, size: vec2f) -> f32
+fn sd_box(pos: vec2f, origin: vec2f, size: vec2f, radius: f32) -> f32
 {
     let half_size = size * 0.5;
     let center = origin + half_size;
 
-    let d = abs(pos - center) - half_size;
+    let d = abs(pos - center) - half_size + radius;
 
-    //return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0);
-    return length(max(d, vec2f(0.0)));
+    return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - radius;
 }
 
 @vertex
@@ -44,15 +45,19 @@ fn vs_main(
     switch(vertex_index) {
         case 0u: {
             out.point = primitive.points[0];
+            out.radius = primitive.radii[0];
         }
         case 1u: {
             out.point = vec2f(primitive.points[0].x, primitive.points[1].y);
+            out.radius = primitive.radii[1];
         }
         case 2u: {
             out.point = vec2f(primitive.points[1].x, primitive.points[0].y);
+            out.radius = primitive.radii[2];
         }
         case 3u: {
             out.point = primitive.points[1];
+            out.radius = primitive.radii[3];
         }
         default: { }
     }
@@ -73,7 +78,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
     let primitive = primitives[in.instance_index];
 
     let size = primitive.points[1] - primitive.points[0];
-    let d = sd_box(in.point, primitive.points[0], size);
+    let d = sd_box(in.point, primitive.points[0], size, in.radius);
 
     var color: vec4f;
 

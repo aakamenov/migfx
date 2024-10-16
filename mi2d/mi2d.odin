@@ -29,6 +29,10 @@ ViewportSize :: [2]f32
 Point :: [2]f32
 Color :: distinct [4]f32 // RGBA
 
+// Order matches the vertex_index in the shader.
+// Top-Left, Bottom-Left, Top-Right, Bottom-Right
+CornerRadii :: distinct [4]f32
+
 Rect :: struct {
     x: f32,
     y: f32,
@@ -38,7 +42,8 @@ Rect :: struct {
 
 Primitive :: struct {
     points: [2]Point,
-    color: Color
+    color: Color,
+    radii: CornerRadii
 }
 
 init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 128) {
@@ -172,10 +177,11 @@ end_draw :: proc(rpass: wgpu.RenderPassEncoder, viewport_size: ViewportSize, sca
     wgpu.RenderPassEncoderDraw(rpass, vertexCount = 4, instanceCount = u32(len(ctx.buffer)), firstVertex = 0, firstInstance = 0)
 }
 
-draw_quad :: proc(rect: Rect, color: Color) {
+draw_quad :: proc(rect: Rect, color: Color, radii: CornerRadii = 0) {
     p := Primitive {
         points = rect_points(rect),
-        color = color
+        color = color,
+        radii = radii
     }
 
     append(&ctx.buffer, p)

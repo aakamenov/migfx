@@ -49,7 +49,8 @@ main :: proc() {
             )
             mi2d.draw_quad(
                 {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
-                {1, 0, 1, 1}
+                {1, 0, 1, 1},
+                {10, 0, 0, 10}
             )
 
             mi2d.end_draw(rpass, {w, h}, 2)
