@@ -41,9 +41,17 @@ Rect :: struct {
 }
 
 Primitive :: struct {
+    type: PrimitiveType,
+    blur_radius: f32,
+    bounds: [2]Point,
     points: [2]Point,
     color: Color,
-    radii: CornerRadii
+    radii: CornerRadii,
+}
+
+PrimitiveType :: enum u32 {
+    Quad = 0,
+    Blur = 1
 }
 
 init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 128) {
@@ -178,10 +186,30 @@ end_draw :: proc(rpass: wgpu.RenderPassEncoder, viewport_size: ViewportSize, sca
 }
 
 draw_quad :: proc(rect: Rect, color: Color, radii: CornerRadii = 0) {
+    points := rect_points(rect)
     p := Primitive {
-        points = rect_points(rect),
+        type = .Quad,
+        bounds = points,
+        points = points,
         color = color,
         radii = radii
+    }
+
+    append(&ctx.buffer, p)
+}
+
+draw_blur :: proc(rect: Rect, color: Color, blur_radius: f32, radii: CornerRadii = 0) {
+    points := rect_points(rect)
+    p := Primitive {
+        type = .Blur,
+        bounds = {
+            {points[0].x - blur_radius * 3, points[0].y - blur_radius * 3},
+            {points[1].x + blur_radius * 3, points[1].y + blur_radius * 3}
+        },
+        points = points,
+        color = color,
+        radii = radii,
+        blur_radius = blur_radius
     }
 
     append(&ctx.buffer, p)

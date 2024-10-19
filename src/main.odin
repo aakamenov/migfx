@@ -31,6 +31,8 @@ main :: proc() {
             w, h := f32(width), f32(height)
             size: f32 = 100.0
 
+            mi2d.draw_quad({0, 0, w, h}, 1)
+
             mi2d.draw_quad(
                 {0, 0, size, size},
                 {1, 0, 0, 1}
@@ -47,9 +49,17 @@ main :: proc() {
                 {(w - size), (h - size), size, size},
                 {0, 1, 1, 1}
             )
-            mi2d.draw_quad(
+
+            mi2d.draw_blur(
                 {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
                 {1, 0, 1, 1},
+                10,
+                {10, 0, 0, 10}
+            )
+
+            mi2d.draw_quad(
+                {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
+                {0, 0, 0, 1},
                 {10, 0, 0, 10}
             )
 
