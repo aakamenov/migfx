@@ -2,6 +2,7 @@ const PI: f32 = 3.14159265358979323846264338327950288;
 
 const QUAD: u32 = 0;
 const BLUR: u32 = 1;
+const CIRCLE: u32 = 2;
 
 struct Uniforms {
     viewport_size: vec2f
@@ -101,6 +102,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
             let alpha = rounded_blur(in.point, primitive.points[0], size, in.radius, primitive.blur_radius);
             dist = 1.0 - alpha * 4.0;
         }
+        case CIRCLE: {
+            dist = sd_circle(in.point - primitive.points[0], primitive.blur_radius);
+        }
         default: { }
     }
 
@@ -122,6 +126,10 @@ fn sd_box(pos: vec2f, origin: vec2f, size: vec2f, radius: f32) -> f32
     let d = abs(pos - center) - half_size + radius;
 
     return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+fn sd_circle(pos: vec2f, r: f32) -> f32 {
+    return length(pos) - r;
 }
 
 // Yoinked from the Fast Rounded Rectangle Shadows blog post: https://madebyevan.com/shaders/fast-rounded-rectangle-shadows

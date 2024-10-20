@@ -51,7 +51,8 @@ Primitive :: struct {
 
 PrimitiveType :: enum u32 {
     Quad = 0,
-    Blur = 1
+    Blur = 1,
+    Circle = 2,
 }
 
 init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 128) {
@@ -122,15 +123,15 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
         fragment = &wgpu.FragmentState {
             module = shader.module,
             entryPoint = shader.fragment_main,
-        	targetCount = 1,
-        	targets = &wgpu.ColorTargetState {
+            targetCount = 1,
+            targets = &wgpu.ColorTargetState {
                 format = migpu.FORMAT,
-        	    writeMask = wgpu.ColorWriteMaskFlags_All,
-        		blend = &{
-        	        color = blend_component,
-        		    alpha = blend_component
-        		}
-        	}
+                writeMask = wgpu.ColorWriteMaskFlags_All,
+                blend = &{
+                    color = blend_component,
+                    alpha = blend_component
+                }
+            }
         },
         primitive = wgpu.PrimitiveState {
             topology = .TriangleStrip
@@ -139,35 +140,35 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
     }
 
     ctx.pipeline = wgpu.DeviceCreateRenderPipeline(
-	   migpu.gfx.device,
-	   &desc
-	)
+       migpu.gfx.device,
+       &desc
+    )
 
-	uniforms_handle, uniforms_buf := migpu.make(ViewportSize, 1, wgpu.BufferUsageFlags { .Uniform, .CopyDst })
-	ctx.uniforms = uniforms_handle
+    uniforms_handle, uniforms_buf := migpu.make(ViewportSize, 1, wgpu.BufferUsageFlags { .Uniform, .CopyDst })
+    ctx.uniforms = uniforms_handle
 
-	primitives_handle, primitives_buf := migpu.make(Primitive, initial_size, wgpu.BufferUsageFlags { .Storage, .CopyDst })
-	ctx.primitives = primitives_handle
+    primitives_handle, primitives_buf := migpu.make(Primitive, initial_size, wgpu.BufferUsageFlags { .Storage, .CopyDst })
+    ctx.primitives = primitives_handle
 
     uniforms_bind_group_entries := migpu.buffer_bind_group_entry(uniforms_buf, 0)
-	ctx.uniforms_bind_group = wgpu.DeviceCreateBindGroup(
-	   migpu.gfx.device,
-	   &{
+    ctx.uniforms_bind_group = wgpu.DeviceCreateBindGroup(
+       migpu.gfx.device,
+       &{
             layout = ctx.uniforms_bind_group_layout,
             entryCount = 1,
             entries = &uniforms_bind_group_entries
-	   }
-	)
+       }
+    )
 
     primitives_bind_group_entries := migpu.buffer_bind_group_entry(primitives_buf, 0)
-	ctx.primitives_bind_group = wgpu.DeviceCreateBindGroup(
-	   migpu.gfx.device,
-	   &{
+    ctx.primitives_bind_group = wgpu.DeviceCreateBindGroup(
+       migpu.gfx.device,
+       &{
             layout = ctx.primitives_bind_group_layout,
             entryCount = 1,
             entries = &primitives_bind_group_entries
-	   }
-	)
+       }
+    )
 }
 
 begin_draw :: proc() {
@@ -198,7 +199,7 @@ draw_quad :: proc(rect: Rect, color: Color, radii: CornerRadii = 0) {
     append(&ctx.buffer, p)
 }
 
-draw_blur :: proc(rect: Rect, color: Color, blur_radius: f32, radii: CornerRadii = 0) {
+draw_blur :: proc(rect: Rect, blur_radius: f32, color: Color, radii: CornerRadii = 0) {
     points := rect_points(rect)
     p := Primitive {
         type = .Blur,
@@ -215,19 +216,34 @@ draw_blur :: proc(rect: Rect, color: Color, blur_radius: f32, radii: CornerRadii
     append(&ctx.buffer, p)
 }
 
+draw_circle :: proc(center: Point, radius: f32, color: Color) {
+    p := Primitive {
+        type = .Circle,
+        bounds = {
+            {center.x - radius, center.y - radius},
+            {center.x + radius, center.y + radius},
+        },
+        points = {center, {}},
+        color = color,
+        blur_radius = radius
+    }
+
+    append(&ctx.buffer, p)
+}
+
 rect_points :: proc "contextless" (rect: Rect) -> [2]Point {
     return { {rect.x, rect.y}, {rect.x + rect.w, rect.y + rect.h} }
 }
 
 deinit :: proc() {
-	wgpu.RenderPipelineRelease(ctx.pipeline)
-	wgpu.PipelineLayoutRelease(ctx.pipeline_layout)
-	wgpu.BindGroupLayoutRelease(ctx.uniforms_bind_group_layout)
-	wgpu.BindGroupLayoutRelease(ctx.primitives_bind_group_layout)
-	wgpu.BindGroupRelease(ctx.primitives_bind_group)
-	wgpu.BindGroupRelease(ctx.uniforms_bind_group)
-	migpu.free(ctx.shader)
-	migpu.free(ctx.uniforms)
-	migpu.free(ctx.primitives)
-	delete(ctx.buffer)
+    wgpu.RenderPipelineRelease(ctx.pipeline)
+    wgpu.PipelineLayoutRelease(ctx.pipeline_layout)
+    wgpu.BindGroupLayoutRelease(ctx.uniforms_bind_group_layout)
+    wgpu.BindGroupLayoutRelease(ctx.primitives_bind_group_layout)
+    wgpu.BindGroupRelease(ctx.primitives_bind_group)
+    wgpu.BindGroupRelease(ctx.uniforms_bind_group)
+    migpu.free(ctx.shader)
+    migpu.free(ctx.uniforms)
+    migpu.free(ctx.primitives)
+    delete(ctx.buffer)
 }

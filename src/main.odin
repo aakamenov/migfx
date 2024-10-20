@@ -30,12 +30,14 @@ main :: proc() {
             width, height := migpu.window_size()
             w, h := f32(width), f32(height)
             size: f32 = 100.0
+            half_size: f32 = size / 2
 
             mi2d.draw_quad({0, 0, w, h}, 1)
 
-            mi2d.draw_quad(
-                {0, 0, size, size},
-                {1, 0, 0, 1}
+            mi2d.draw_circle(
+                {half_size, half_size},
+                half_size,
+                {1, 0, 0, 1},
             )
             mi2d.draw_quad(
                 {(w - size), 0, size, size},
@@ -51,14 +53,14 @@ main :: proc() {
             )
 
             mi2d.draw_blur(
-                {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
-                {1, 0, 1, 1},
+                {(w / 2) - half_size, (h / 2) - half_size, size, size},
                 10,
+                {1, 0, 1, 1},
                 {10, 0, 0, 10}
             )
 
             mi2d.draw_quad(
-                {(w / 2) - (size / 2), (h / 2) - (size / 2), size, size},
+                {(w / 2) - half_size, (h / 2) - half_size, size, size},
                 {0, 0, 0, 1},
                 {10, 0, 0, 10}
             )
