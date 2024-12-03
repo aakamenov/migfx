@@ -39,21 +39,29 @@ buffer_write :: proc {
     buffer_ptr_write
 }
 
-buffer_handle_write :: proc(handle: pool.Handle(Buffer), data: []$T, offset: u32 = 0, loc := #caller_location) -> bool {
+buffer_handle_write :: proc(
+    handle: pool.Handle(Buffer),
+    data: []$T,
+    offset: u32 = 0,
+    loc := #caller_location
+) -> (realloc: bool, ok: bool) #optional_ok {
     buf := pool.get(&state.resources.buffers, handle) or_return
-    buffer_ptr_write(buf, data, offset, loc)
+    realloc = buffer_ptr_write(buf, data, offset, loc)
+    ok = true
 
-    return true
+    return
 }
 
-buffer_ptr_write :: proc(buf: ^Buffer, data: []$T, offset: u32 = 0, loc := #caller_location) {
+buffer_ptr_write :: proc(buf: ^Buffer, data: []$T, offset: u32 = 0, loc := #caller_location) -> bool {
     assert(buf.type == typeid_of(T), "The data type that the buffer was created for does not match the argument.", loc)
 
     data_size := u32(size_of(T) * len(data))
     offset := u32(size_of(T) * offset)
     new_size := data_size + offset
 
-    if new_size > buf.size {
+    realloc := new_size > buf.size
+
+    if realloc {
         wgpu.BufferRelease(buf.gpu_buf)
         buf.size = new_size
 
@@ -67,6 +75,8 @@ buffer_ptr_write :: proc(buf: ^Buffer, data: []$T, offset: u32 = 0, loc := #call
     }
 
     wgpu.QueueWriteBuffer(gfx.queue, buf.gpu_buf, u64(offset), raw_data(data), uint(data_size))
+
+    return realloc
 }
 
 buffer_bind_group_entry :: proc {
@@ -77,7 +87,7 @@ buffer_bind_group_entry :: proc {
 buffer_handle_bind_group_entry :: proc "contextless" (
     handle: pool.Handle(Buffer),
     binding: u32,
-    offset: u32 = 0
+    offset: u64 = 0
 ) -> (entry: wgpu.BindGroupEntry, ok: bool) #optional_ok {
     buf := pool.get(&state.resources.buffers, handle) or_return
 
@@ -87,11 +97,12 @@ buffer_handle_bind_group_entry :: proc "contextless" (
 buffer_ptr_bind_group_entry :: proc "contextless" (
     buf: ^Buffer,
     binding: u32,
-    offset: u32 = 0
+    offset: u64 = 0
 ) -> wgpu.BindGroupEntry {
     return {
-        binding = 0,
+        binding = binding,
         buffer = buf.gpu_buf,
-        size = u64(buf.size)
+        size = u64(buf.size),
+        offset = offset
     }
 }

@@ -3,6 +3,7 @@ const PI: f32 = 3.14159265358979323846264338327950288;
 const QUAD: u32 = 0;
 const BLUR: u32 = 1;
 const CIRCLE: u32 = 2;
+const BEZIER: u32 = 3;
 
 struct Uniforms {
     viewport_size: vec2f
@@ -10,9 +11,9 @@ struct Uniforms {
 
 struct Primitive {
     ty: u32,
-    blur_radius: f32,
+    extra_param: f32,
     bounds: array<vec2f, 2>,
-    points: array<vec2f, 2>,
+    points: array<vec2f, 3>,
     color: Color,
     radii: Radii
 }
@@ -99,11 +100,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
             dist = sd_box(in.point, primitive.points[0], size, in.radius);
         }
         case BLUR: {
-            let alpha = rounded_blur(in.point, primitive.points[0], size, in.radius, primitive.blur_radius);
+            let alpha = rounded_blur(in.point, primitive.points[0], size, in.radius, primitive.extra_param);
             dist = 1.0 - alpha * 4.0;
         }
         case CIRCLE: {
-            dist = sd_circle(in.point - primitive.points[0], primitive.blur_radius);
+            dist = sd_circle(in.point - primitive.points[0], primitive.extra_param);
+        }
+        case BEZIER: {
+            dist = sd_bezier_approx(
+                in.point,
+                primitive.points[0],
+                primitive.points[1],
+                primitive.points[2]
+            ) - primitive.extra_param;
         }
         default: { }
     }
@@ -130,6 +139,93 @@ fn sd_box(pos: vec2f, origin: vec2f, size: vec2f, radius: f32) -> f32
 
 fn sd_circle(pos: vec2f, r: f32) -> f32 {
     return length(pos) - r;
+}
+
+// Yoinked from the Vger library: https://github.com/audulus/vger-rs/blob/763e0ab03e61b3a4fe604b41ffee3de3f3a8152e/src/shader.wgsl#L257
+fn sd_bezier_approx(p: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32 {
+    let v0 = normalize(B - A);
+    let v1 = normalize(C - A);
+    let det = v0.x * v1.y - v1.x * v0.y;
+
+    if(abs(det) < 0.01) {
+        return sd_bezier(p, A, B, C);
+    }
+
+    return length(bezier_distance_approx(A - p, B - p, C - p));
+}
+
+fn bezier_distance_approx(b0: vec2<f32>, b1: vec2<f32>, b2: vec2<f32>) -> vec2<f32> {
+    let a = det(b0, b2);
+    let b = 2.0*det(b1, b0);
+    let d = 2.0*det(b2, b1);
+
+    let f = b * d - a * a;
+    let d21 = b2 - b1;
+    let d10 = b1 - b0;
+    let d20 = b2 - b0;
+
+    var gf = 2.0 * (b * d21 + d * d10 + a * d20);
+    gf = vec2<f32>(gf.y, -gf.x);
+    let pp = -f * gf / dot(gf, gf);
+    let d0p = b0 - pp;
+    let ap = det(d0p, d20);
+    let bp = 2.0 * det(d10, d0p);
+
+    // (note that 2 * ap + bp + dp = 2 * a + b + d = 4 * area(b0, b1, b2))
+    let t = clamp((ap + bp) / (2.0 * a + b + d), 0.0, 1.0);
+
+    return mix(mix(b0, b1, t), mix(b1, b2, t), t);
+}
+
+fn sd_bezier(pos: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32
+{
+    let a = B - A;
+    let b = A - 2.0 * B + C;
+    let c = a * 2.0;
+    let d = A - pos;
+
+    let kk = 1.0 / dot(b, b);
+    let kx = kk * dot(a, b);
+    let ky = kk * (2.0 * dot(a, a) + dot(d, b)) / 3.0;
+    let kz = kk * dot(d, a);
+
+    var res = 0.0;
+
+    let p = ky - kx * kx;
+    let p3 = p * p * p;
+    let q = kx * (2.0 * kx * kx + -3.0 * ky) + kz;
+    var h = q * q + 4.0 * p3;
+
+    if(h >= 0.0)
+    {
+        h = sqrt(h);
+        let x = (vec2<f32>(h, -h ) -q ) / 2.0;
+        let uv = sign(x) * pow(abs(x), vec2<f32>(1.0 / 3.0));
+        let t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
+        res = dot2(d + (c + b * t) * t);
+    }
+    else
+    {
+        let z = sqrt(-p);
+        let v = acos(q / (p * z * 2.0)) / 3.0;
+        let m = cos(v);
+        let n = sin(v) * 1.732050808;
+        let t = clamp(vec3<f32>(m + m, -n - m, n - m) * z - kx, vec3<f32>(0.0), vec3<f32>(1.0));
+        res = min(dot2(d + (c + b * t.x) * t.x), dot2(d + (c + b * t.y) * t.y));
+
+        // the third root cannot be the closest
+        // res = min(res, dot2(d + (c + b * t.z) * t.z));
+    }
+
+    return sqrt(res);
+}
+
+fn dot2(v: vec2<f32>) -> f32 {
+    return dot(v,v);
+}
+
+fn det(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    return a.x * b.y - b.x * a.y;
 }
 
 // Yoinked from the Fast Rounded Rectangle Shadows blog post: https://madebyevan.com/shaders/fast-rounded-rectangle-shadows

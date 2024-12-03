@@ -13,22 +13,24 @@ main :: proc() {
     defer mi2d.deinit()
 
     for !migpu.should_close() {
-		_ = migpu.begin_frame()
-		mi2d.begin_draw()
+    	_ = migpu.begin_frame()
 
-		if migpu.begin_draw() {
-		    frame := migpu.surface_texture_view()
-		    rpass := migpu.push_render_pass({
+    	if migpu.begin_draw() {
+    	    frame := migpu.surface_texture_view()
+    	    rpass := migpu.push_render_pass({
                 color_attachments = {{
                     view = {
                         view = frame
                     },
                     clear_value = { 0, 0, 0, 1 }
                 }}
-		    })
+    	    })
 
             width, height := migpu.window_size()
             w, h := f32(width), f32(height)
+
+            mi2d.begin_draw({w, h}, 2)
+
             size: f32 = 100.0
             half_size: f32 = size / 2
 
@@ -65,10 +67,12 @@ main :: proc() {
                 {10, 0, 0, 10}
             )
 
-            mi2d.end_draw(rpass, {w, h}, 2)
-			migpu.end_draw()
-		}
+            mi2d.draw_text("C", {w - size * 3, size}, 64, {0,0,0,1})
 
-		migpu.end_frame()
-	}
+            mi2d.end_draw(rpass)
+            migpu.end_draw()
+        }
+
+        migpu.end_frame()
+    }
 }
