@@ -57,7 +57,8 @@ PrimitiveType :: enum u32 {
     Quad = 0,
     Blur = 1,
     Circle = 2,
-    Bezier = 3
+    Bezier = 3,
+    Line = 4,
 }
 
 init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1024) {
@@ -275,6 +276,27 @@ draw_bezier :: proc(a, b, c: Point, width: f32, color: Color) {
             },
         },
         points = {a, b, c},
+        color = color,
+        extra_param = width
+    }
+
+    append(&ctx.buffer, p)
+}
+
+draw_line :: proc(a, b: Point, width: f32, color: Color) {
+    p := Primitive {
+        type = .Line,
+        bounds = {
+            {
+                min(a.x, b.x) - width / 2,
+                min(a.y, b.y) - width / 2,
+            },
+            {
+                max(a.x, b.x) + width / 2,
+                max(a.y, b.y) + width / 2,
+            },
+        },
+        points = {a, b, {}},
         color = color,
         extra_param = width
     }

@@ -67,7 +67,7 @@ main :: proc() {
                 {10, 0, 0, 10}
             )
 
-            mi2d.draw_text("C", {w - size * 3, size}, 64, {0,0,0,1})
+            mi2d.draw_text("ABC", {w - size * 4, size}, 64, {0,0,0,1})
 
             mi2d.end_draw(rpass)
             migpu.end_draw()

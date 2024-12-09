@@ -59,39 +59,33 @@ render_glyph :: proc(font: ^Font, index: GlyphIndex, origin: Point, scale: f32, 
     defer stbtt.FreeShape(&font.info, vertices)
 
     assert(vertices[0].type == 1)
-    prev := Point {f32(vertices[0].x), f32(vertices[0].y)}
-    curr: Point
+    prev: Point
 
-    for i in 1..<len {
+    for i in 0..<len {
         vertex := vertices[i]
-        curr = Point {f32(vertex.x), f32(vertex.y)}
-
-        midpoint: Point
+        curr := Point {f32(vertex.x), f32(vertex.y)} * {1, -1}
 
         switch stbtt.vmove(vertex.type) {
             case .vmove:
                 prev = curr
                 continue
             case .vline:
-                midpoint = 0.5 * (prev + curr)
+                // midpoint := 0.5 * (prev + curr)
+                draw_line(origin + prev * scale, origin + curr * scale, 1, color)
             case .vcurve:
-                midpoint = Point {f32(vertex.cx), f32(vertex.cy)}
+                midpoint := Point {f32(vertex.cx), f32(vertex.cy)} * {1, -1}
+
+                bezier := QBezier {prev, midpoint, curr} * scale
+                draw_bezier(
+                    origin + bezier[0],
+                    origin + bezier[1],
+                    origin + bezier[2],
+                    0.5,
+                    color
+                )
             case .none, .vcubic: fallthrough
             case: panic("Unexpected vertex type.")
         }
-
-        bezier := QBezier {prev, midpoint, curr} * scale
-        draw_circle(origin + bezier[0], 1, {1,0,0,1})
-        draw_circle(origin + bezier[1], 1, {0,1,0,1})
-        draw_circle(origin + bezier[2], 1, {0,0,1,1})
-
-        // draw_bezier(
-        //     origin + bezier[0],
-        //     origin + bezier[1],
-        //     origin + bezier[2],
-        //     1,
-        //     color
-        // )
 
         prev = curr
     }

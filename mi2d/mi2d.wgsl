@@ -4,6 +4,7 @@ const QUAD: u32 = 0;
 const BLUR: u32 = 1;
 const CIRCLE: u32 = 2;
 const BEZIER: u32 = 3;
+const LINE: u32 = 4;
 
 struct Uniforms {
     viewport_size: vec2f
@@ -114,6 +115,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
                 primitive.points[2]
             ) - primitive.extra_param;
         }
+        case LINE: {
+            dist = sd_segment(in.point, primitive.points[0], primitive.points[1], primitive.extra_param);
+        }
         default: { }
     }
 
@@ -141,8 +145,30 @@ fn sd_circle(pos: vec2f, r: f32) -> f32 {
     return length(pos) - r;
 }
 
+fn sd_segment(p: vec2f, a: vec2f, b: vec2f, width: f32) -> f32
+{
+    let u = normalize(b - a);
+    let v = rot90(u);
+
+    var pp = p;
+    pp = pp - (a + b) / 2.0;
+    pp = pp * mat2x2<f32>(u, v);
+
+    return sd_box2(pp, vec2f(length(b - a) / 2.0, width / 2.0), 0.0);
+}
+
+fn sd_box2(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32
+{
+    let d = abs(p)-b+r;
+    return length(max(d,vec2<f32>(0.0, 0.0))) + min(max(d.x,d.y),0.0)-r;
+}
+
+fn rot90(p: vec2f) -> vec2f {
+    return vec2f(-p.y, p.x);
+}
+
 // Yoinked from the Vger library: https://github.com/audulus/vger-rs/blob/763e0ab03e61b3a4fe604b41ffee3de3f3a8152e/src/shader.wgsl#L257
-fn sd_bezier_approx(p: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32 {
+fn sd_bezier_approx(p: vec2f, A: vec2f, B: vec2f, C: vec2f) -> f32 {
     let v0 = normalize(B - A);
     let v1 = normalize(C - A);
     let det = v0.x * v1.y - v1.x * v0.y;
@@ -154,7 +180,7 @@ fn sd_bezier_approx(p: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f
     return length(bezier_distance_approx(A - p, B - p, C - p));
 }
 
-fn bezier_distance_approx(b0: vec2<f32>, b1: vec2<f32>, b2: vec2<f32>) -> vec2<f32> {
+fn bezier_distance_approx(b0: vec2f, b1: vec2f, b2: vec2f) -> vec2f {
     let a = det(b0, b2);
     let b = 2.0*det(b1, b0);
     let d = 2.0*det(b2, b1);
@@ -165,7 +191,7 @@ fn bezier_distance_approx(b0: vec2<f32>, b1: vec2<f32>, b2: vec2<f32>) -> vec2<f
     let d20 = b2 - b0;
 
     var gf = 2.0 * (b * d21 + d * d10 + a * d20);
-    gf = vec2<f32>(gf.y, -gf.x);
+    gf = vec2f(gf.y, -gf.x);
     let pp = -f * gf / dot(gf, gf);
     let d0p = b0 - pp;
     let ap = det(d0p, d20);
@@ -177,7 +203,7 @@ fn bezier_distance_approx(b0: vec2<f32>, b1: vec2<f32>, b2: vec2<f32>) -> vec2<f
     return mix(mix(b0, b1, t), mix(b1, b2, t), t);
 }
 
-fn sd_bezier(pos: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32
+fn sd_bezier(pos: vec2f, A: vec2f, B: vec2f, C: vec2f) -> f32
 {
     let a = B - A;
     let b = A - 2.0 * B + C;
@@ -199,8 +225,8 @@ fn sd_bezier(pos: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32
     if(h >= 0.0)
     {
         h = sqrt(h);
-        let x = (vec2<f32>(h, -h ) -q ) / 2.0;
-        let uv = sign(x) * pow(abs(x), vec2<f32>(1.0 / 3.0));
+        let x = (vec2f(h, -h ) -q ) / 2.0;
+        let uv = sign(x) * pow(abs(x), vec2f(1.0 / 3.0));
         let t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
         res = dot2(d + (c + b * t) * t);
     }
@@ -220,11 +246,11 @@ fn sd_bezier(pos: vec2<f32>, A: vec2<f32>, B: vec2<f32>, C: vec2<f32>) -> f32
     return sqrt(res);
 }
 
-fn dot2(v: vec2<f32>) -> f32 {
+fn dot2(v: vec2f) -> f32 {
     return dot(v,v);
 }
 
-fn det(a: vec2<f32>, b: vec2<f32>) -> f32 {
+fn det(a: vec2f, b: vec2f) -> f32 {
     return a.x * b.y - b.x * a.y;
 }
 
