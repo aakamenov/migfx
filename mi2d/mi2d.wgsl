@@ -7,6 +7,8 @@ const BEZIER: u32 = 3;
 const LINE: u32 = 4;
 const GLYPH: u32 = 5;
 
+const ENABLE_FONT_ANTI_ALIASING: bool = true;
+
 struct Uniforms {
     viewport_size: vec2f
 }
@@ -122,8 +124,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
 
                 alpha += glyph_coverage(1.0, p0, p1, p2);
 
-                // Cast a vertical ray to perform anti-aliasing
-                alpha += glyph_coverage(1.0, rotate(p0), rotate(p1), rotate(p2));
+                if ENABLE_FONT_ANTI_ALIASING {
+                    // Cast a vertical ray to perform anti-aliasing
+                    alpha += glyph_coverage(1.0, rotate(p0), rotate(p1), rotate(p2));
+                }
+            }
+
+            if ENABLE_FONT_ANTI_ALIASING {
+                alpha *= 0.5;
             }
 
             alpha = saturate(alpha);
