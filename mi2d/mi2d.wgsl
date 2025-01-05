@@ -5,6 +5,7 @@ const BLUR: u32 = 1;
 const CIRCLE: u32 = 2;
 const BEZIER: u32 = 3;
 const LINE: u32 = 4;
+const GLYPH: u32 = 5;
 
 struct Uniforms {
     viewport_size: vec2f
@@ -19,7 +20,7 @@ struct Primitive {
     radii: Radii
 }
 
-// We use structs of 4 f32 instead of vec4f because the latter has a alignment requirement of 16.
+// We use structs of 4 f32 instead of vec4f because the latter has an alignment requirement of 16.
 struct Color {
     r: f32,
     g: f32,
@@ -48,6 +49,10 @@ var<uniform> uniforms: Uniforms;
 @group(1)
 @binding(0)
 var<storage, read> primitives: array<Primitive>;
+
+@group(1)
+@binding(1)
+var<storage, read> font_data: array<array<vec2f, 3>>;
 
 @vertex
 fn vs_main(
@@ -91,6 +96,48 @@ fn vs_main(
 fn fs_main(in: VertexOut) -> @location(0) vec4f {
     let primitive = primitives[in.instance_index];
 
+    if primitive.ty < GLYPH {
+        return sd_primitive(in, primitive);
+    }
+
+    switch primitive.ty {
+        case GLYPH: {
+            let offset = in.point - primitive.bounds[0];
+            let size = primitive.bounds[1].y - primitive.bounds[0].y;
+
+            let start = i32(primitive.points[0].x);
+            let end = i32(primitive.points[0].y);
+            let scale = primitive.extra_param;
+
+            var alpha = 0.0;
+
+            for (var i = start; i < end; i++) {
+                let data = font_data[i];
+
+                // The raw font vertices are in the TrueType coordinate system (https://learn.microsoft.com/en-us/typography/opentype/spec/ttch01#funits-and-the-grid)
+                // We scale and translate them to the top-left corner and offset by the current pixel so that the ray starts at 0.0
+                let p0 = data[0] * scale + vec2f(0.0, size) - offset;
+                let p1 = data[1] * scale + vec2f(0.0, size) - offset;
+                let p2 = data[2] * scale + vec2f(0.0, size) - offset;
+
+                alpha += glyph_coverage(1.0, p0, p1, p2);
+
+                // Cast a vertical ray to perform anti-aliasing
+                alpha += glyph_coverage(1.0, rotate(p0), rotate(p1), rotate(p2));
+            }
+
+            alpha = saturate(alpha);
+            let color = vec4f(primitive.color.r, primitive.color.g, primitive.color.b, primitive.color.a);
+
+            return mix(vec4f(color.rgb, 0.0), color, alpha);
+        }
+        default: { }
+    }
+
+    return vec4f(0.0);
+}
+
+fn sd_primitive(in: VertexOut, primitive: Primitive) -> vec4f {
     let size = primitive.points[1] - primitive.points[0];
     var dist: f32;
 
@@ -247,7 +294,7 @@ fn sd_bezier(pos: vec2f, A: vec2f, B: vec2f, C: vec2f) -> f32
 }
 
 fn dot2(v: vec2f) -> f32 {
-    return dot(v,v);
+    return dot(v, v);
 }
 
 fn det(a: vec2f, b: vec2f) -> f32 {
@@ -298,4 +345,64 @@ fn erf(v: vec2f) -> vec2f {
     let r2 = r1 * r1;
 
     return s - s / (r2 * r2);
+}
+
+// Based on the approach described by Eric Lengyel (https://terathon.com/i3d2018_lengyel.pdf)
+// Implementation taken from: https://github.com/GreenLightning/gpu-font-rendering/blob/aa739f037b99c7218313066da999c5ba3eaf570f/shaders/font.frag#L54-L101
+fn glyph_coverage(inverseDiameter: f32, p0: vec2f, p1: vec2f, p2: vec2f) -> f32 {
+    if p0.y > 0.0 && p1.y > 0.0 && p2.y > 0.0 {
+       return 0.0;
+    }
+
+    if p0.y < 0.0 && p1.y < 0.0 && p2.y < 0.0 {
+       return 0.0;
+    }
+
+    // Note: Simplified from abc formula by extracting a factor of (-2) from b.
+    let a = p0 - 2 * p1 + p2;
+    let b = p0 - p1;
+    let c = p0;
+
+    var t0 = 0.0;
+    var t1 = 0.0;
+
+    if abs(a.y) >= 1e-5 {
+        // Quadratic segment, solve abc formula to find roots.
+        let radicand = b.y * b.y - a.y * c.y;
+
+        if radicand <= 0.0 {
+            return 0.0;
+        }
+
+        let s = sqrt(radicand);
+        t0 = (b.y - s) / a.y;
+        t1 = (b.y + s) / a.y;
+    } else {
+        let t = p0.y / (p0.y - p2.y);
+        if p0.y < p2.y {
+            t0 = -1.0;
+            t1 = t;
+        } else {
+            t0 = t;
+            t1 = -1.0;
+        }
+    }
+
+    var alpha = 0.0;
+
+    if t0 >= 0.0 && t0 < 1.0 {
+        let x = (a.x * t0 - 2.0 * b.x) * t0 + c.x;
+        alpha -= saturate(x * inverseDiameter + 0.5);
+    }
+
+    if t1 >= 0.0 && t1 < 1.0 {
+        let x = (a.x * t1 - 2.0 * b.x) * t1 + c.x;
+        alpha += saturate(x * inverseDiameter + 0.5);
+    }
+
+    return alpha;
+}
+
+fn rotate(v: vec2f) -> vec2f {
+    return vec2f(v.y, -v.x);
 }

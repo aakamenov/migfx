@@ -6,21 +6,23 @@ import "../migpu"
 import "../migpu/pool"
 
 SHADER :: #load("mi2d.wgsl", cstring)
-DEFAULT_FONT :: #load("ProggyClean.ttf")
+DEFAULT_FONT :: #load("SauceCodeProNerdFont-Medium.ttf")
 
 @(private)
 ctx: Context
 
 @(private)
 Context :: struct {
-    buffer: [dynamic]Primitive,
+    primitives: [dynamic]Primitive,
     fonts: [MAX_FONTS]Font,
+    font_data: [dynamic][3]Point,
     current_font: FontId,
     pipeline: wgpu.RenderPipeline,
     pipeline_layout: wgpu.PipelineLayout,
     shader: pool.Handle(migpu.Shader),
     uniforms: pool.Handle(migpu.Buffer),
-    primitives: pool.Handle(migpu.Buffer),
+    primitives_wgpu: pool.Handle(migpu.Buffer),
+    font_data_wgpu: pool.Handle(migpu.Buffer),
     uniforms_bind_group_layout: wgpu.BindGroupLayout,
     primitives_bind_group_layout: wgpu.BindGroupLayout,
     uniforms_bind_group: wgpu.BindGroup,
@@ -59,6 +61,7 @@ PrimitiveType :: enum u32 {
     Circle = 2,
     Bezier = 3,
     Line = 4,
+    Glyph = 5
 }
 
 init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1024) {
@@ -68,7 +71,9 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
         panic("Couldn't load default font")
     }
 
-    ctx.buffer = make([dynamic]Primitive, initial_size, alloc)
+    font_data_initial_size := initial_size / 2
+    ctx.primitives = make([dynamic]Primitive, initial_size, alloc)
+    ctx.font_data = make([dynamic][3]Point, font_data_initial_size, alloc)
 
     shader_handle, shader := migpu.make(SHADER, "vs_main", "fs_main")
     ctx.shader = shader_handle
@@ -91,12 +96,22 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
         }
     )
 
-    primitives_layout_entries := wgpu.BindGroupLayoutEntry {
-        binding = 0,
-        visibility = {.Vertex, .Fragment},
-        buffer = {
-            type = .ReadOnlyStorage,
-            minBindingSize = size_of(Primitive)
+    primitives_layout_entries := [2]wgpu.BindGroupLayoutEntry {
+        {
+            binding = 0,
+            visibility = {.Vertex, .Fragment},
+            buffer = {
+                type = .ReadOnlyStorage,
+                minBindingSize = size_of(Primitive)
+            }
+        },
+        {
+            binding = 1,
+            visibility = {.Fragment},
+            buffer = {
+                type = .ReadOnlyStorage,
+                minBindingSize = size_of([3]Point)
+            }
         }
     }
 
@@ -104,14 +119,14 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
         migpu.gfx.device,
         &{
             label = "mi2d primitives bind group layout",
-            entryCount = 1,
-            entries = &primitives_layout_entries
+            entryCount = 2,
+            entries = raw_data(&primitives_layout_entries)
         }
     )
 
     bind_group_layouts: [2]wgpu.BindGroupLayout = {
         ctx.uniforms_bind_group_layout,
-        ctx.primitives_bind_group_layout
+        ctx.primitives_bind_group_layout,
     }
     ctx.pipeline_layout = wgpu.DeviceCreatePipelineLayout(
         migpu.gfx.device,
@@ -161,7 +176,10 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
     ctx.uniforms = uniforms_handle
 
     primitives_handle, primitives_buf := migpu.make(Primitive, initial_size, wgpu.BufferUsageFlags { .Storage, .CopyDst })
-    ctx.primitives = primitives_handle
+    ctx.primitives_wgpu = primitives_handle
+
+    font_data_handle, font_data_buf := migpu.make([3]Point, font_data_initial_size, wgpu.BufferUsageFlags { .Storage, .CopyDst })
+    ctx.font_data_wgpu = font_data_handle
 
     uniforms_bind_group_entries := migpu.buffer_bind_group_entry(uniforms_buf, 0)
     ctx.uniforms_bind_group = wgpu.DeviceCreateBindGroup(
@@ -173,19 +191,23 @@ init :: proc(alloc: runtime.Allocator = context.allocator, initial_size: u32 = 1
        }
     )
 
-    primitives_bind_group_entries := migpu.buffer_bind_group_entry(primitives_buf, 0)
+    primitives_bind_group_entries := [2]wgpu.BindGroupEntry {
+        migpu.buffer_bind_group_entry(primitives_buf, 0),
+        migpu.buffer_bind_group_entry(font_data_buf, 1)
+    }
     ctx.primitives_bind_group = wgpu.DeviceCreateBindGroup(
         migpu.gfx.device,
         &{
             layout = ctx.primitives_bind_group_layout,
-            entryCount = 1,
-            entries = &primitives_bind_group_entries
+            entryCount = 2,
+            entries = raw_data(&primitives_bind_group_entries)
         }
     )
 }
 
 begin_draw :: proc(viewport_size: ViewportSize, scale: f32) {
-    clear(&ctx.buffer)
+    clear(&ctx.primitives)
+    clear(&ctx.font_data)
 
     ctx.viewport_size = viewport_size
     ctx.scale = scale
@@ -194,18 +216,25 @@ begin_draw :: proc(viewport_size: ViewportSize, scale: f32) {
 end_draw :: proc(rpass: wgpu.RenderPassEncoder) {
     migpu.buffer_write(ctx.uniforms, []ViewportSize {ctx.viewport_size})
 
-    buf := migpu.get(ctx.primitives)
+    primitives_buf := migpu.get(ctx.primitives_wgpu)
+    font_data_buf := migpu.get(ctx.font_data_wgpu)
 
-    if update := migpu.buffer_write(buf, ctx.buffer[:]); update {
+    update := migpu.buffer_write(primitives_buf, ctx.primitives[:])
+    update |= migpu.buffer_write(font_data_buf, ctx.font_data[:])
+
+    if update {
         wgpu.BindGroupRelease(ctx.primitives_bind_group)
 
-        entries := migpu.buffer_bind_group_entry(buf, 0)
+        entries := [2]wgpu.BindGroupEntry {
+            migpu.buffer_bind_group_entry(primitives_buf, 0),
+            migpu.buffer_bind_group_entry(font_data_buf, 1)
+        }
         ctx.primitives_bind_group = wgpu.DeviceCreateBindGroup(
             migpu.gfx.device,
             &{
                 layout = ctx.primitives_bind_group_layout,
-                entryCount = 1,
-                entries = &entries
+                entryCount = 2,
+                entries = raw_data(&entries)
             }
         )
     }
@@ -214,7 +243,7 @@ end_draw :: proc(rpass: wgpu.RenderPassEncoder) {
     wgpu.RenderPassEncoderSetBindGroup(rpass, 0, ctx.uniforms_bind_group)
     wgpu.RenderPassEncoderSetBindGroup(rpass, 1, ctx.primitives_bind_group)
 
-    wgpu.RenderPassEncoderDraw(rpass, vertexCount = 4, instanceCount = u32(len(ctx.buffer)), firstVertex = 0, firstInstance = 0)
+    wgpu.RenderPassEncoderDraw(rpass, vertexCount = 4, instanceCount = u32(len(ctx.primitives)), firstVertex = 0, firstInstance = 0)
 }
 
 draw_quad :: proc(rect: Rect, color: Color, radii: CornerRadii = 0) {
@@ -227,7 +256,7 @@ draw_quad :: proc(rect: Rect, color: Color, radii: CornerRadii = 0) {
         radii = radii
     }
 
-    append(&ctx.buffer, p)
+    append(&ctx.primitives, p)
 }
 
 draw_blur :: proc(rect: Rect, blur_radius: f32, color: Color, radii: CornerRadii = 0) {
@@ -244,7 +273,7 @@ draw_blur :: proc(rect: Rect, blur_radius: f32, color: Color, radii: CornerRadii
         extra_param = blur_radius
     }
 
-    append(&ctx.buffer, p)
+    append(&ctx.primitives, p)
 }
 
 draw_circle :: proc(center: Point, radius: f32, color: Color) {
@@ -259,7 +288,7 @@ draw_circle :: proc(center: Point, radius: f32, color: Color) {
         extra_param = radius
     }
 
-    append(&ctx.buffer, p)
+    append(&ctx.primitives, p)
 }
 
 draw_bezier :: proc(a, b, c: Point, width: f32, color: Color) {
@@ -280,7 +309,7 @@ draw_bezier :: proc(a, b, c: Point, width: f32, color: Color) {
         extra_param = width
     }
 
-    append(&ctx.buffer, p)
+    append(&ctx.primitives, p)
 }
 
 draw_line :: proc(a, b: Point, width: f32, color: Color) {
@@ -301,7 +330,7 @@ draw_line :: proc(a, b: Point, width: f32, color: Color) {
         extra_param = width
     }
 
-    append(&ctx.buffer, p)
+    append(&ctx.primitives, p)
 }
 
 draw_text :: proc(text: string, pos: Point, size: f32, color: Color) {
@@ -310,7 +339,6 @@ draw_text :: proc(text: string, pos: Point, size: f32, color: Color) {
     pos := pos
 
     assert(font.info.data != nil)
-
     for char in text {
         index := glyph_index(&font, char)
 
@@ -318,8 +346,24 @@ draw_text :: proc(text: string, pos: Point, size: f32, color: Color) {
 
         metrics := scaled_glyph_metrics(&font, index, scale)
 
-        //draw_quad({pos.x, pos.y, metrics.bounds.w, metrics.bounds.h}, {1,0,0,1})
-        render_glyph(&font, index, pos, scale, color)
+        glyph_bounds := Rect {pos.x, pos.y - metrics.bounds.h, metrics.bounds.w, metrics.bounds.h}
+        // draw_quad(glyph_bounds, {0.5, 0.5, 0.5, 0.3})
+
+        start := len(&ctx.font_data)
+        render_glyph(&font, index, color)
+        end := len(&ctx.font_data)
+
+        if start != end {
+            p := Primitive {
+                type = .Glyph,
+                extra_param = scale,
+                bounds = rect_points(glyph_bounds),
+                points = {{f32(start), f32(end)}, {}, {}},
+                color = color,
+            }
+
+            append(&ctx.primitives, p)
+        }
 
         pos.x += metrics.x_advance
     }
@@ -346,6 +390,8 @@ deinit :: proc() {
     wgpu.BindGroupRelease(ctx.uniforms_bind_group)
     migpu.free(ctx.shader)
     migpu.free(ctx.uniforms)
-    migpu.free(ctx.primitives)
-    delete(ctx.buffer)
+    migpu.free(ctx.primitives_wgpu)
+    migpu.free(ctx.font_data_wgpu)
+    delete(ctx.primitives)
+    delete(ctx.font_data)
 }

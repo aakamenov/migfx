@@ -22,8 +22,6 @@ GlyphMetrics :: struct {
     left_side_bearing: f32
 }
 
-QBezier :: distinct [3]Point
-
 load_font :: proc(
     ttf: []u8,
     alloc: runtime.Allocator = context.allocator
@@ -49,7 +47,7 @@ load_font :: proc(
     return
 }
 
-render_glyph :: proc(font: ^Font, index: GlyphIndex, origin: Point, scale: f32, color: Color) {
+render_glyph :: proc(font: ^Font, index: GlyphIndex, color: Color) {
     vertices: [^]stbtt.vertex
 
     len := stbtt.GetGlyphShape(&font.info, index, &vertices)
@@ -70,19 +68,15 @@ render_glyph :: proc(font: ^Font, index: GlyphIndex, origin: Point, scale: f32, 
                 prev = curr
                 continue
             case .vline:
-                // midpoint := 0.5 * (prev + curr)
-                draw_line(origin + prev * scale, origin + curr * scale, 1, color)
+                midpoint := 0.5 * (prev + curr)
+
+                line := [3]Point {prev, midpoint, curr}
+                append(&ctx.font_data, line)
             case .vcurve:
                 midpoint := Point {f32(vertex.cx), f32(vertex.cy)} * {1, -1}
 
-                bezier := QBezier {prev, midpoint, curr} * scale
-                draw_bezier(
-                    origin + bezier[0],
-                    origin + bezier[1],
-                    origin + bezier[2],
-                    0.5,
-                    color
-                )
+                bezier := [3]Point {prev, midpoint, curr}
+                append(&ctx.font_data, bezier)
             case .none, .vcubic: fallthrough
             case: panic("Unexpected vertex type.")
         }
