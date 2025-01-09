@@ -12,6 +12,9 @@ MAX_FONTS :: 4
 
 Font :: struct {
     info: stbtt.fontinfo,
+    ascent: f32,
+    descent: f32,
+    lineGap: f32
 }
 
 GlyphMetrics :: struct {
@@ -41,13 +44,22 @@ load_font :: proc(
 
     if !stbtt.InitFont(&info, raw_data(ttf), 0) do return
 
-    ctx.fonts[id] = Font { info }
+    ascent, descent, lineGap: i32
+    stbtt.GetFontVMetrics(&info, &ascent, &descent, &lineGap)
+
+    ctx.fonts[id] = Font {
+        info = info,
+        ascent = f32(ascent),
+        descent = f32(descent),
+        lineGap = f32(lineGap)
+    }
+
     ok = true
 
     return
 }
 
-render_glyph :: proc(font: ^Font, index: GlyphIndex, color: Color) {
+render_glyph :: proc(font: ^Font, units_per_em: f32, index: GlyphIndex, color: Color) {
     vertices: [^]stbtt.vertex
 
     len := stbtt.GetGlyphShape(&font.info, index, &vertices)
@@ -70,12 +82,12 @@ render_glyph :: proc(font: ^Font, index: GlyphIndex, color: Color) {
             case .vline:
                 midpoint := 0.5 * (prev + curr)
 
-                line := [3]Point {prev, midpoint, curr}
+                line := [3]Point {prev, midpoint, curr} / units_per_em
                 append(&ctx.font_data, line)
             case .vcurve:
                 midpoint := Point {f32(vertex.cx), f32(vertex.cy)} * {1, -1}
 
-                bezier := [3]Point {prev, midpoint, curr}
+                bezier := [3]Point {prev, midpoint, curr} / units_per_em
                 append(&ctx.font_data, bezier)
             case .none, .vcubic: fallthrough
             case: panic("Unexpected vertex type.")
@@ -85,7 +97,7 @@ render_glyph :: proc(font: ^Font, index: GlyphIndex, color: Color) {
     }
 }
 
-scaled_glyph_metrics :: proc(font: ^Font, index: GlyphIndex, scale: f32) -> GlyphMetrics {
+glyph_metrics :: proc(font: ^Font, index: GlyphIndex) -> GlyphMetrics {
     x_advance, left_side_bearing, x, y, w, h: i32
 
     stbtt.GetGlyphHMetrics(&font.info, index, &x_advance, &left_side_bearing)
@@ -94,12 +106,25 @@ scaled_glyph_metrics :: proc(font: ^Font, index: GlyphIndex, scale: f32) -> Glyp
     return {
         bounds = {
             x = f32(x),
-            y = f32(y),
-            w = f32(w) * scale,
-            h = f32(h) * scale
+            y = f32(y - h),
+            w = f32(w),
+            h = f32(h)
         },
-        x_advance = f32(x_advance) * scale,
-        left_side_bearing = f32(left_side_bearing) * scale
+        x_advance = f32(x_advance),
+        left_side_bearing = f32(left_side_bearing)
+    }
+}
+
+glyph_metrics_scale :: proc(m: GlyphMetrics, scale: f32) -> GlyphMetrics {
+    return {
+        bounds = {
+            x = m.bounds.x,
+            y = m.bounds.y,
+            w = m.bounds.w * scale,
+            h = m.bounds.h * scale
+        },
+        x_advance = m.x_advance * scale,
+        left_side_bearing = m.left_side_bearing * scale
     }
 }
 
@@ -109,4 +134,11 @@ glyph_index :: #force_inline proc(font: ^Font, char: rune) -> GlyphIndex {
 
 font_scale :: #force_inline proc(font: ^Font, font_size: f32, display_scale: f32) -> f32 {
     return stbtt.ScaleForPixelHeight(&font.info, font_size) * display_scale
+}
+
+// stb doesn't expose this
+font_units_per_em :: proc(font: ^Font) -> u16 {
+    ptr := font.info.data[font.info.head + 18:]
+
+    return u16(ptr[0]) * 256 + u16(ptr[1])
 }

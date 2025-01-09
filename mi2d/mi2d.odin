@@ -6,7 +6,7 @@ import "../migpu"
 import "../migpu/pool"
 
 SHADER :: #load("mi2d.wgsl", cstring)
-DEFAULT_FONT :: #load("SauceCodeProNerdFont-Medium.ttf")
+DEFAULT_FONT :: #load("SauceCodeProNerdFont-Regular.ttf")
 
 @(private)
 ctx: Context
@@ -334,38 +334,54 @@ draw_line :: proc(a, b: Point, width: f32, color: Color) {
 }
 
 draw_text :: proc(text: string, pos: Point, size: f32, color: Color) {
+    // Paraphrasing Eric Lengyel:
+    // In order to prevent text from looking bad at small sizes we expand the glyph boundary by this amount
+    // to ensure that the pixel shader is run for every pixel that is partially covered even a tiny bit.
+    // Without dilation, there are often pixels that are as much as 50% covered getting skipped during
+    // rasterization because the actual centers of the pixels fall outside the polygon being rendered.
+
+    // TODO: Actually expand only below a certain size threshold.
+    DILATION :: 0.1
+
     font := ctx.fonts[ctx.current_font]
     scale := font_scale(&font, size, ctx.scale)
+
+    units_per_em := f32(font_units_per_em(&font))
+    dilation := DILATION * units_per_em
     pos := pos
 
     assert(font.info.data != nil)
+
     for char in text {
         index := glyph_index(&font, char)
 
         if index == INVALID_GLYPH_INDEX do continue
 
-        metrics := scaled_glyph_metrics(&font, index, scale)
+        metrics := glyph_metrics(&font, index)
+        metrics.bounds = rect_expand(metrics.bounds, dilation)
 
-        glyph_bounds := Rect {pos.x, pos.y - metrics.bounds.h, metrics.bounds.w, metrics.bounds.h}
-        // draw_quad(glyph_bounds, {0.5, 0.5, 0.5, 0.3})
+        scaled_metrics := glyph_metrics_scale(metrics, scale)
+
+        uv := rect_points(metrics.bounds) / units_per_em
+        glyph_bounds := Rect {pos.x, pos.y, scaled_metrics.bounds.w, scaled_metrics.bounds.h}
+        //draw_quad(glyph_bounds, {0.5, 0.5, 0.5, 0.3})
 
         start := len(&ctx.font_data)
-        render_glyph(&font, index, color)
+        render_glyph(&font, units_per_em, index, color)
         end := len(&ctx.font_data)
 
         if start != end {
             p := Primitive {
                 type = .Glyph,
-                extra_param = scale,
                 bounds = rect_points(glyph_bounds),
-                points = {{f32(start), f32(end)}, {}, {}},
+                points = {{f32(start), f32(end)}, uv[0], uv[1]},
                 color = color,
             }
 
             append(&ctx.primitives, p)
         }
 
-        pos.x += metrics.x_advance
+        pos.x += scaled_metrics.x_advance
     }
 }
 
@@ -379,6 +395,15 @@ select_font :: proc(id: FontId) {
 
 rect_points :: proc "contextless" (rect: Rect) -> [2]Point {
     return {{rect.x, rect.y}, {rect.x + rect.w, rect.y + rect.h}}
+}
+
+rect_expand :: proc "contextless" (rect: Rect, amount: f32) -> Rect {
+    return {
+        x = rect.x - amount,
+        y = rect.y - amount,
+        w = rect.w + amount,
+        h = rect.h + amount
+    }
 }
 
 deinit :: proc() {

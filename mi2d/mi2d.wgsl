@@ -41,7 +41,8 @@ struct VertexOut {
     @builtin(position) position: vec4f,
     @location(0) point: vec2f,
     @location(1) instance_index: u32,
-    @location(2) radius: f32
+    @location(2) radius: f32,
+    @location(3) uv: vec2f
 }
 
 @group(0)
@@ -67,18 +68,22 @@ fn vs_main(
     switch(vertex_index) {
         case 0u: {
             out.point = primitive.bounds[0];
+            out.uv = primitive.points[1];
             out.radius = primitive.radii.top_left;
         }
         case 1u: {
             out.point = vec2f(primitive.bounds[0].x, primitive.bounds[1].y);
+            out.uv = vec2f(primitive.points[1].x, primitive.points[2].y);
             out.radius = primitive.radii.bottom_left;
         }
         case 2u: {
             out.point = vec2f(primitive.bounds[1].x, primitive.bounds[0].y);
+            out.uv = vec2f(primitive.points[2].x, primitive.points[1].y);
             out.radius = primitive.radii.top_right;
         }
         case 3u: {
             out.point = primitive.bounds[1];
+            out.uv = primitive.points[2];
             out.radius = primitive.radii.bottom_right;
         }
         default: { }
@@ -104,29 +109,24 @@ fn fs_main(in: VertexOut) -> @location(0) vec4f {
 
     switch primitive.ty {
         case GLYPH: {
-            let offset = in.point - primitive.bounds[0];
-            let size = primitive.bounds[1].y - primitive.bounds[0].y;
-
             let start = i32(primitive.points[0].x);
             let end = i32(primitive.points[0].y);
-            let scale = primitive.extra_param;
 
+            let pixels_per_em = 1.0 / (1.0 * fwidth(in.uv));
             var alpha = 0.0;
 
             for (var i = start; i < end; i++) {
                 let data = font_data[i];
 
-                // The raw font vertices are in the TrueType coordinate system (https://learn.microsoft.com/en-us/typography/opentype/spec/ttch01#funits-and-the-grid)
-                // We scale and translate them to the top-left corner and offset by the current pixel so that the ray starts at 0.0
-                let p0 = data[0] * scale + vec2f(0.0, size) - offset;
-                let p1 = data[1] * scale + vec2f(0.0, size) - offset;
-                let p2 = data[2] * scale + vec2f(0.0, size) - offset;
+                let p0 = data[0] - in.uv;
+                let p1 = data[1] - in.uv;
+                let p2 = data[2] - in.uv;
 
-                alpha += glyph_coverage(1.0, p0, p1, p2);
+                alpha += glyph_coverage(pixels_per_em.x, p0, p1, p2);
 
                 if ENABLE_FONT_ANTI_ALIASING {
                     // Cast a vertical ray to perform anti-aliasing
-                    alpha += glyph_coverage(1.0, rotate(p0), rotate(p1), rotate(p2));
+                    alpha += glyph_coverage(pixels_per_em.y, rotate(p0), rotate(p1), rotate(p2));
                 }
             }
 
